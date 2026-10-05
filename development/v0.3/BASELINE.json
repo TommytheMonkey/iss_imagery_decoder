@@ -1,0 +1,456 @@
+{
+  "version": "0.3.0.dev1",
+  "finalized_utc": "2026-10-05T09:42:50.360873+00:00",
+  "decoder_path": "/home/tommy/iss/robot36-decoder/development/v0.3",
+  "algorithm_changes_during_finalization": false,
+  "pre_real_science_freeze": "V03_SCIENCE_FREEZE.json",
+  "unchanged_science_files": 19,
+  "v02_original_files_verified": 25,
+  "source_manifest": "SOURCE_SHA256SUMS",
+  "source_manifest_sha256": "0e6c35e0ed9a7d9c7195db3745693d05ec1888c430ae99cda6d35fd4b830ecc2",
+  "source_manifest_entries": 48,
+  "reference_manifest": "reports/reference/REFERENCE_SHA256SUMS",
+  "reference_manifest_sha256": "0deecfd6064866ebfe765306ea55f4e2533a30e41b6e3e91e0447dd616ea82d5",
+  "reference_artifacts": 23,
+  "reference_cache_exclusion": "intermediate.c64 files are retained but excluded from the reference report manifest",
+  "environment": "reports/validation/baseline-final/environment.json",
+  "environment_note": "Observed shared-environment module versions, not a portable installer lockfile. Runner selects the recorded read-only environment.",
+  "commands_working_directory": "/home/tommy/iss/robot36-decoder/development/v0.3",
+  "test_commands": [
+    "./tools/run-python -m unittest tests.test_v03 -v",
+    "./tools/run-python -m tools.verify_v02",
+    "./tools/run-python -m tools.validate_v03 --out reports/validation/baseline-final --cases all --workers 4"
+  ],
+  "tests": {
+    "unit_count": 25,
+    "rf_case_count": 14,
+    "status": "PASS",
+    "negative_control_cases": 5,
+    "negative_control_accepted_candidates": 0,
+    "rf_summaries_and_all_candidate_records_identical_to_pre_real_run": true,
+    "directory": "reports/validation/baseline-final"
+  },
+  "rf_results": [
+    {
+      "case": "colored_noise",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "NO EVIDENCE",
+      "n_candidates": 30,
+      "elapsed_s": 228.5672996044159,
+      "supported": []
+    },
+    {
+      "case": "constant_tone",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.0,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "NO EVIDENCE",
+      "n_candidates": 30,
+      "elapsed_s": 347.49772548675537,
+      "supported": []
+    },
+    {
+      "case": "cw",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "NO EVIDENCE",
+      "n_candidates": 3,
+      "elapsed_s": 33.84624695777893,
+      "supported": []
+    },
+    {
+      "case": "invalid_vis",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "PROBABLE",
+      "n_candidates": 23,
+      "elapsed_s": 328.52592754364014,
+      "supported": [
+        "RF0001",
+        "RF0002",
+        "RF0003",
+        "RF0005",
+        "RF0006",
+        "RF0008",
+        "RF0009",
+        "RF0013",
+        "RF0014",
+        "RF0016",
+        "RF0019",
+        "RF0020"
+      ]
+    },
+    {
+      "case": "low_deviation",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 1000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "CONFIRMED ROBOT36",
+      "n_candidates": 26,
+      "elapsed_s": 164.62663674354553,
+      "supported": [
+        "RF0001",
+        "RF0002",
+        "RF0003",
+        "RF0005",
+        "RF0007",
+        "RF0008",
+        "RF0010",
+        "RF0011"
+      ]
+    },
+    {
+      "case": "mixed_fm_cw",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "CONFIRMED ROBOT36",
+      "n_candidates": 27,
+      "elapsed_s": 217.63987922668457,
+      "supported": [
+        "RF0003",
+        "RF0004",
+        "RF0005",
+        "RF0007",
+        "RF0008",
+        "RF0011",
+        "RF0012",
+        "RF0015",
+        "RF0016",
+        "RF0017",
+        "RF0018",
+        "RF0019"
+      ]
+    },
+    {
+      "case": "periodic_non_sstv",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.0,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "INCONCLUSIVE",
+      "n_candidates": 27,
+      "elapsed_s": 354.6387641429901,
+      "supported": []
+    },
+    {
+      "case": "snr_+0",
+      "injected": {
+        "cnr_db": 0,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "CONFIRMED ROBOT36",
+      "n_candidates": 69,
+      "elapsed_s": 835.8992290496826,
+      "supported": [
+        "RF0001",
+        "RF0002",
+        "RF0003",
+        "RF0004",
+        "RF0005",
+        "RF0006",
+        "RF0008",
+        "RF0010",
+        "RF0011",
+        "RF0013",
+        "RF0014",
+        "RF0020",
+        "RF0029",
+        "RF0035",
+        "RF0036",
+        "RF0038",
+        "RF0042",
+        "RF0045",
+        "RF0051",
+        "RF0053",
+        "RF0054",
+        "RF0057",
+        "RF0058"
+      ]
+    },
+    {
+      "case": "snr_+6",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "CONFIRMED ROBOT36",
+      "n_candidates": 35,
+      "elapsed_s": 652.6801676750183,
+      "supported": [
+        "RF0001",
+        "RF0002",
+        "RF0003",
+        "RF0005",
+        "RF0006",
+        "RF0008",
+        "RF0009",
+        "RF0012",
+        "RF0013",
+        "RF0015",
+        "RF0018",
+        "RF0019",
+        "RF0020",
+        "RF0021",
+        "RF0022",
+        "RF0025",
+        "RF0026",
+        "RF0031"
+      ]
+    },
+    {
+      "case": "snr_-12",
+      "injected": {
+        "cnr_db": -12,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 3.630809294871795e-07
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "NO EVIDENCE",
+      "n_candidates": 59,
+      "elapsed_s": 493.3415787220001,
+      "supported": []
+    },
+    {
+      "case": "snr_-3",
+      "injected": {
+        "cnr_db": -3,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "CONFIRMED ROBOT36",
+      "n_candidates": 52,
+      "elapsed_s": 737.0205805301666,
+      "supported": [
+        "RF0001",
+        "RF0002",
+        "RF0003",
+        "RF0004",
+        "RF0005",
+        "RF0006",
+        "RF0011",
+        "RF0014",
+        "RF0015",
+        "RF0017",
+        "RF0022",
+        "RF0032",
+        "RF0033",
+        "RF0036",
+        "RF0040",
+        "RF0041",
+        "RF0043"
+      ]
+    },
+    {
+      "case": "snr_-6",
+      "injected": {
+        "cnr_db": -6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "PROBABLE",
+      "n_candidates": 54,
+      "elapsed_s": 612.1462051868439,
+      "supported": [
+        "RF0002",
+        "RF0003",
+        "RF0008"
+      ]
+    },
+    {
+      "case": "snr_-9",
+      "injected": {
+        "cnr_db": -9,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 39.0
+      },
+      "verdict": "INCONCLUSIVE",
+      "n_candidates": 65,
+      "elapsed_s": 551.6804029941559,
+      "supported": []
+    },
+    {
+      "case": "unrelated_fm",
+      "injected": {
+        "cnr_db": 6,
+        "cnr_reference_hz": 48000,
+        "rf_deviation_hz": 3000,
+        "sample_rate": 1024000,
+        "coarse_hz": -100000.0,
+        "oscillator_hz": 6000,
+        "clip_fraction": 0.0
+      },
+      "reference": {
+        "fs": 12000,
+        "t_line0": 1.91,
+        "period": 0.15,
+        "duration": 21.0
+      },
+      "verdict": "INCONCLUSIVE",
+      "n_candidates": 24,
+      "elapsed_s": 572.9652051925659,
+      "supported": []
+    }
+  ],
+  "reference_recordings": {
+    "16:54": {
+      "directory": "reports/real/16-54",
+      "verdict": "INCONCLUSIVE"
+    },
+    "18:30": {
+      "directory": "reports/real/18-30",
+      "verdict": "INCONCLUSIVE"
+    }
+  },
+  "capture_commands": "CAPTURE_COMMANDS.md",
+  "next_capture_command": "/home/tommy/iss/robot36-decoder/development/v0.3/tools/analyze-iq /data/iss/iq/NEXT.iq --iq-rate 1024000 --center-freq 437650000 --signal-freq 437550000 --out /home/tommy/iss/robot36-decoder/development/v0.3/reports/NEXT-analysis",
+  "limitations": "Verdicts and sensitivity limitations are documented in README.md, DEVELOPMENT.md and reports/FINAL_REPORT.md. Native full-recording scans can take many hours."
+}

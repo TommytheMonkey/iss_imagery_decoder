@@ -1,0 +1,6 @@
+# Observed baseline module versions; not a portable pip lockfile.
+numpy==2.5.3
+scipy==1.18.1
+soundfile==0.9.0
+Pillow==12.3.0
+matplotlib==3.10.1+dfsg1

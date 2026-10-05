@@ -1,0 +1,2419 @@
+--- /dev/null
++++ v0.3/DEVELOPMENT.md
+@@ -0,0 +1,98 @@
++# Robot36dec v0.3 development copy
++
++The parent repository is the untouched v0.2.0 implementation. `V02_BASELINE.json`
++records all copied source/test/tool/document hashes; `python -m tools.verify_v02`
++checks them. The copied `FROZEN.md` and `VALIDATION.md` are historical v0.2 records,
++not claims that v0.3 has the same behavior or validation.
++
++Run from this directory. Install with `pip install -e '.[test,plots]'` in a normal
++network-enabled environment. In this restricted workspace, Python dependencies
++are shared read-only from the existing environments. `tools/run-python` sets the
++necessary paths and prevents bytecode writes.
++
++## Raw IQ analysis
++
++```
++python -m robot36dec decode INPUT.iq --iq --iq-rate 1024000 \
++  --center-freq 437650000 --signal-freq 437550000 --out OUTPUT
++```
++
++Raw IQ always uses the candidate-preserving pipeline. The old public
++`iqdemod.demodulate()` single-carrier API now raises an explicit migration error;
++use `robot36dec.candidates.analyze(path, out, spec)` instead. It scans the entire input;
++`--start`, `--end`, `--t0`, and `--period` are WAV-only and rejected for IQ. Each RF
++trajectory is demodulated independently at 11, 15, and 25 kHz total bandwidth,
++with 0/75 us de-emphasis and gate off/auto. Search defaults to +/-30 kHz; the
++minimum required range includes +/-11.25 kHz Doppler, declared oscillator
++uncertainty, and margin. Intermediate decimation adapts to that range. Unsupported
++ranges fail explicitly rather than silently truncate.
++
++`--receiver-ppm` describes an **observed positive frequency shift** in units of
++nominal RF frequency, which is subtracted from the residual searched for Doppler.
++It is not the rtl_sdr driver's `-p` sign convention. `--uncertainty-ppm` describes
++remaining uncertainty (default 20). Apparent RF Hz and residual Hz are reported
++separately; without ephemeris/calibration, residual motion is not pure Doppler.
++
++RF screening uses signed noise subtraction, a robust spatial noise model,
++Gamma-median bias correction, and conservative Hann/Welch covariance. A spectral
++z-score is a model-dependent screening statistic, never a carrier lock or ISS
++identification. Narrow peaks remain hypotheses and are never excluded merely
++because a low modulation index leaves a strong carrier line. Sideband aliases
++and fragmented trajectories are deliberately retained; candidate count is not
++transmitter count. No candidate-count cap is applied.
++
++Cadence is acquired using sync measurements on alternating **line pairs**.
++Presence is selected from training sync only (at least 12 four-line groups);
++disjoint pairs validate sync contrast, off-pulse geometry, measured pulse FWHM,
++1500 Hz porch, alternating 1500/2300 Hz separators, and parity contrast.
++The short 1900 Hz second porch is also measured: strong contradiction vetoes
++acceptance, while positive evidence is required for CONFIRMED status. Weak
++second-porch evidence can support only PROBABLE status. These
++checks do not use image pixels, image smoothness, or tone-estimator confidence.
++A valid measured VIS additionally requires header geometry, decisive measured
++bits, code 8, even parity, and agreement with the acquired sync grid. Templates
++cannot repair measured parity. A header alone cannot establish an image.
++
++Verdicts:
++- CONFIRMED ROBOT36: required held-out geometry and aligned valid measured VIS.
++- PROBABLE: required held-out geometry without a credible aligned VIS.
++- INCONCLUSIVE: some structural checks pass, but required checks fail.
++- NO EVIDENCE: the tested hypotheses lack enough structural support.
++
++Images are rendered only for the first two verdicts. No negative verdict proves
++that an image cannot be recovered. Thresholds are engineering rules, not
++calibrated posterior probabilities; the report records all variants and searches.
++Demodulation uses overlapping 40 s windows to bound memory for persistent RF.
++Auto-gate checks that leave audio unchanged reuse the identical off-gate evidence,
++explicitly marked in the report. No candidate or bandwidth is skipped. The frontend FIR latency is reported;
++absolute audio timing retains this small latency (well below the 0.5 ms grid).
++
++## Tests
++
++```
++python -m unittest tests.test_v03 -v
++python -m tools.validate_v03 --out reports/validation --cases all
++python -m tools.verify_v02
++```
++
++The independent encoder and RF simulator import no decoder code. CNR is referred
++to 48 kHz: complex RF noise variance is `A^2 * fs_iq / (48000 * 10^(CNR/10))`.
++IQ is quantized unsigned 8-bit I,Q at 1.024 MS/s with -100 kHz capture offset,
++frequency drift, fades, and 6 kHz oscillator shift. The full sensitivity sweep
++uses 240 lines at +6, 0, -3, -6, -9, -12 dB. ADC clipping is recorded.
++
++The copied v0.2 pytest modules are historical tests for the original API/output
++contract. They are not the v0.3 test suite: raw IQ now produces a candidate report,
++and rejected WAVs produce diagnostics without a forced image. The new unittest
++suite can also run under pytest; expensive RF validation is an explicit command.
++Real IQ analysis is performed only after these independent validations complete,
++with code/config hashes frozen beforehand. No parameter is selected using those
++recordings or a previous decoder classification.
++
++## Parallel execution of the frozen candidate evaluations
++
++`tools.parallel_candidates` is a computational resume tool for the two full-recording analyses. It extracts the exact candidate loop from the frozen production function, removes only progress/checkpoint writing, and evaluates independent remaining candidates with four workers. Completed v0.3 measurements are retained; no v0.2 classification enters it. Candidate ordering in the final report remains unchanged. Scheduling by duration changes computation order only.
++
++Before use, `--equivalence` regenerates the independent low-deviation RF fixture and requires exact equality of all 26 candidates, all variants, all measurements and all decisions against the completed serial RF regression. The proof is `reports/validation/parallel-equivalence.json`. Production source/configuration remains at the pre-real freeze. The final real reports explicitly record parallel resume and its provenance.
++
++`tools.fast_execution` additionally skips the unused gate diagnostics in the off branch (which returns the unmodified input). The automatic-gate decision and both bandpasses remain unchanged. Its full low-deviation RF report is exactly equal to the serial report; tone, Gaussian-noise and impulsive-control audio arrays also match bit for bit (`fast-execution-equivalence.json`, `fast-audio-equivalence.json`). These are execution-equivalence checks, not independent DSP truth tests. The independent encoder/negative controls provide the latter. Real-report execution metadata records this shortcut. Production source and statistical thresholds remain unchanged.
+--- v0.2/README.md
++++ v0.3/README.md
+@@ -1,230 +1,15 @@
+-# robot36dec — a Robot 36 SSTV decoder that does not need the header
++# Robot36dec v0.3 development copy
+ 
+-`robot36dec` (0.2.0) decodes Robot 36 SSTV pictures from FM-demodulated audio (48 kHz mono WAV, rtl_fm style) or directly
+-from RTL-SDR unsigned 8-bit IQ captures. It was built from the analysis of the ISS recording
+-`audio/ISS_2026-10-04_10-23-00.wav` (a pass received below the FM threshold with only partial carrier capture) and it
+-keeps the two properties that recording demanded:
++This isolated copy preserves the parent frozen v0.2.0 implementation. It replaces single-carrier IQ selection with candidate-preserving RF analysis and requires independently measured Robot 36 protocol structure before accepting an image.
+ 
+-* **a valid VIS header is not required** — a normal path reads the calibration leader / break / VIS code and a recovery
+-  path assumes Robot 36 and recovers the line timing from the 1200 Hz sync pulses, the ~150 ms line period, the
+-  autocorrelation comb and inter-line coherence;
+-* **the timing is redundant** — line 0 and the line period are estimated by several independent methods (VIS stop-bit
+-  end, per-line sync-pulse fit, ACF comb fit, phase fold, header-end signature, picture presence, separator parity, image
+-  coherence) and combined with explicit agreement and confidence numbers.
++Read [DEVELOPMENT.md](DEVELOPMENT.md) for usage, metadata, verdicts, tests and limitations; [implementation details](reports/IMPLEMENTATION.md) describe the changes. The completed validation and recording analysis are documented in [FINAL_REPORT.md](reports/FINAL_REPORT.md).
+ 
+-Input files are opened read-only and never modified. No reference image is ever read by the decoder; the only place
+-references may be used is the separate blind-validation tool `tools/validate_against_references.py`, which the package
+-does not import.
++Run from this directory using `tools/run-python` in this workspace:
+ 
+-## Install
+-
+-```sh
+-# Python >= 3.11 with numpy, scipy, soundfile, pillow (matplotlib only for --plots)
+-uv pip install --python <your-python> numpy scipy soundfile pillow matplotlib pytest
+-# or: pip install numpy scipy soundfile pillow matplotlib pytest
++```
++./tools/run-python -m unittest tests.test_v03 -v
++./tools/run-python -m robot36dec decode INPUT.iq --iq --iq-rate 1024000 \
++  --center-freq 437650000 --signal-freq 437550000 --out OUTPUT
+ ```
+ 
+-The package is pure Python; run it from this directory (`python -m robot36dec ...`) or add the directory to `PYTHONPATH`.
+-The project venv used for development is `../.venv/bin/python` (Python 3.13, numpy 2.5, scipy 1.18, soundfile 0.14,
+-Pillow 12, matplotlib 3.11).
+-
+-## Usage
+-
+-### FM-demodulated WAV (48 kHz mono, rtl_fm output)
+-
+-```sh
+-python -m robot36dec decode recording.wav --out out/ --plots
+-python -m robot36dec decode recording.wav --out out/ --mode recovery          # ignore the header, sync-pulse timing only
+-python -m robot36dec decode recording.wav --out out/ --start 300 --end 380     # analyse a window (times are kept absolute)
+-python -m robot36dec decode recording.wav --out out/ --t0 323.705 --period 0.1499964   # force the timing
+-```
+-
+-Audio is converted to **instantaneous frequency deviation in Hz**: an rtl_fm int16 full scale corresponds to a
+-deviation of `fs_out` = 48000 Hz (`--wav-fullscale-hz`, default 48000). Other sample rates are resampled to 48 kHz (the
+-original rate and the resampling ratio are reported). For generic sound-card audio the scale is unknown; all estimators
+-are scale-free, only the FM-threshold gate depends on it and its `auto` mode detects when it does not apply.
+-
+-### RTL-SDR IQ (unsigned 8-bit interleaved I/Q)
+-
+-```sh
+-python -m robot36dec decode capture.u8 --iq --iq-rate 1024000 --center-freq 437.540e6 --signal-freq 437.550e6 --out out/
+-```
+-
+-The IQ front end (`iqdemod.py`) is chunked (buffered reads, the file is never loaded whole): DC removal, coarse channel
+-selection around `--signal-freq` (default 437.550 MHz), carrier search within ±15 kHz by 0.5 s block spectra with a
+-narrowband-interferer test (a CW carrier whose power sits in ~125 Hz is rejected and the search repeated with its channel
+-masked), a Doppler-tolerant carrier tracker (hold/predict through gaps, slew limit ~300 Hz/s), fine mixing by the smoothed
+-track, polyphase resampling to 48 kHz, a 15 kHz channel low-pass, polar discriminator and 75 µs de-emphasis. The carrier
+-track (time, offset, SNR, lock) is written to the diagnostics JSON and summarised in the log; when no block locks (wrong
+-`--center-freq`, `--signal-freq` or `--iq-rate`) the decoder says so explicitly. Sample rates 240 kS/s to 2.4 MS/s were
+-tested; the chain runs 28–40× real time on 5–10 minute files.
+-
+-### Options
+-
+-| option | meaning |
+-|---|---|
+-| `--mode auto\|normal\|recovery` | `auto` (default): normal path when a credible Robot 36 VIS is found, else recovery; `normal`: use a Robot 36 VIS candidate of any confidence ≥ 0.2 (else recovery); `recovery`: ignore the header entirely |
+-| `--t0 S`, `--period S` | override line-0 time (seconds into the input) and line period |
+-| `--start S`, `--end S` | analyse only this window (absolute times are preserved) |
+-| `--gate auto\|on\|off` | FM-threshold gate (default `auto`) |
+-| `--estimator chain\|soft` | luminance estimator (default `chain`, see below) |
+-| `--window-ms`, `--wav-fullscale-hz`, `--params FILE.json` | analysis window, WAV scale, parameter overrides |
+-| `--plots` | diagnostic plots (needs matplotlib) |
+-| `--save-audio` | also write the demodulated and the preprocessed audio as float WAV into `--out` |
+-| `--basename NAME`, `--quiet` | output prefix (default: input stem), suppress the log |
+-
+-Exit code 0 = a credible Robot 36 signal was decoded, 2 = no credible Robot 36 signal (diagnostics are still written and
+-the summary names the reason, e.g. `VIS 12 = Robot 72 identified ... sync pulses only on every other line`), 1 = error
+-(including usage errors).
+-
+-## Outputs (all inside `--out`, prefixed with the input stem)
+-
+-| file | content |
+-|---|---|
+-| `<base>_image.png`, `_image_x3.png` | RGB reconstruction (320×240; ×3 nearest-neighbour) |
+-| `<base>_luma.png`, `_luma_x3.png` | luminance (grayscale) reconstruction, one-line estimator |
+-| `<base>_luma_fused.png`, `_luma_fused_masked(_x3).png` | reliability-gated 3-line fusion, with/without the unreliable pixels greyed |
+-| `<base>_image_fused_masked.png`, `<base>_mask.png` | fused RGB with unreliable pixels grey; the reliability mask |
+-| `<base>_diagnostics.json` | everything numeric: timing (t_line0, period, source, confidence, agreement of all estimators incl. placement anchor and ambiguity, period standard error, pulse-pattern / Robot 36 structure test, signal confidence), VIS candidates (code, mode name, parity, bit tones, z-score, confidence, whether used for the timing), period estimate (ACF comb z at 150 and 300 ms, comb-fit period and its standard error, candidates for other modes), line-sync summary on the final timing (detected pulse times, inliers, residual sd) and the fit's statistics, gate decision and statistics, whitening decision, per-block SNR / quieting / reliable fraction / row coherence, the signal decision with its criteria and reason, parameters, software version, IQ carrier track and lock summary |
+-| `<base>_line_sync.csv` | per line of the final frame: expected and detected sync-pulse time, residual, strength, inlier flag |
+-| `<base>_line_metrics.csv` | per line: start time, audio SNR, wideband quieting, separator parity, reliable fraction |
+-| `<base>_plots/` (`--plots`) | `header_vis.png` (spectrogram around the header with the ideal VIS tone sequence), `sync_acf.png` (ACF comb), `sync_raster.png` (sync likelihood folded at the final timing), `line_metrics.png`, `freq_raster.png` (dominant-frequency raster next to the decoded luminance) |
+-
+-## How it works
+-
+-Both paths share the audio chain: DC/Doppler removal (running trimmed mean, 0.5 s) → FM-threshold gate (see below) →
+-400–3200 Hz band-pass.
+-
+-**Normal path.** `header.find_vis` correlates a template of the whole 910 ms VIS header (leader 1900 Hz 300 ms, break
+-1200 Hz 10 ms, leader, start bit 1200 Hz 30 ms, eight bit slots in the 1100-or-1300 Hz band, stop bit) with band-energy
+-ratios z-scored against the file's no-tone frames (so that a clean picture does not inflate the false-alarm statistics;
+-the header z is ~16 from CNR 0 to +20 dB and 25 on the reference recording), refines each peak at 1 ms hop jointly over
+-all 128 codes, decodes the bits with a sampling-offset scan (stability plateau), checks parity and reports z-score, noise
+-maximum, mode name and a confidence in [0, 1]. A Robot 36 candidate (code 8) with confidence ≥ 0.6 defines line 0 at the
+-end of the stop bit; other codes are reported by name but not decoded.
+-
+-**Recovery path** (`--mode recovery`, or `auto` without a credible header). `sync.sync_likelihood` turns the audio into
+-the share of the 900–2600 Hz energy that lies in the 1200 Hz sync band (9 ms Hann windows, 0.5 ms hop).
+-`estimate_period_acf` detects the Robot 36 comb (ACF peaks at k·150 ms minus the half-period troughs, in robust-sd
+-units; the same statistic at 300 ms exposes a Robot 72 train) and refines the period by a weighted fit of the comb-peak
+-lags over long lags; `fold_phase` finds the pulse phase; `track_lines` searches every line for its pulse (±20 ms), fits a
+-robust line through the inliers (tolerance shrinking 12 → 4 ms) and rejects 30 ms VIS-bit plateaus by a pulse-shape
+-test. `timing.resolve_timing` then places the 240-line frame on the pulse grid: the feasible range of integer placements
+-comes from the detected pulses (a pulse that cannot share a frame with the last one is noise) and the carrier-presence
+-span, and the anchor is, in order of priority, the header-end signature (a 1200 Hz stop bit of tone-like strength
+-immediately before a line start that is followed by picture tones), a Robot 36 VIS candidate with valid parity and
+-agreeing bit tones (auto mode only), the *dense start* (the first pulse followed by enough further pulses within 12 or 24
+-lines, 'enough' calibrated against the measured false-inlier rate so that isolated noise pulses never start a frame), the
+-first supported pulse, or the midpoint. The per-line tone SNR then checks the start: when the picture level is resolvable
+-above the pre-frame noise level (pure receiver noise gives −8.9 dB, a picture at CNR −6 dB about −6 dB), a pulse on a
+-noise-level line cannot be the first line and the start moves to the first pulse on a picture line; the separator-tone
+-parity (1500 Hz even / 2300 Hz odd lines) fixes an even/odd error, using the same picture evidence to break ties. A
+-pulse train on every other line, or a comb that is stronger at 300 ms than at 150 ms, marks a non-Robot-36 line structure
+-(Robot 72): the confidence is cut and the transmission is reported, not decoded. The period is the inverse-variance
+-combination of the sync fit and the ACF comb fit; a coherence refinement (sync-column contrast + adjacent-row correlation
+-of a quick decode on a t0 ±6 ms / ±60 ppm grid) is always reported and adopted only when the sync fit is weak. The
+-confidence carries the integer-line ambiguity (expected number of undetected leading lines from the local detection
+-density, fade-in at the start, excess of pulses before the chosen start) and the period's standard error; the signal
+-evidence alone (`confidence_signal`) decides the exit code. The feasible range and every alternative placement are written
+-to the diagnostics.
+-
+-**Image estimation** (`decode.decode_robot36`). 12 ms Hann spectra at every pixel centre on a 1350–2450 Hz grid, whitened
+-by the receiver-noise spectral shape measured on the file's own no-signal stretches (when there is none, the whole-file
+-shape is used only if it spans ≤ 8 dB: a clean picture's whole-file "shape" is its own tone leakage); luminance by a
+-Gaussian Markov chain along the line (forward–backward posterior mean, evidence temperature T = 8, σ = 80 Hz/px; T = 16,
+-σ = 40 when the gate is off) in the FM-threshold regime, or by the soft posterior-mean estimator when the frame's median
+-per-line SNR is ≥ 8 dB (above the FM threshold the chain prior only blurs sharp content); chroma by the soft estimator
+-with 3-line-pair averaging; JPEG YCrCb → RGB. A reliability mask comes from the smoothed posterior sd, thresholded at the
+-0.5th percentile of a *control decode* of the file's own noise with the identical pipeline (so pure noise keeps 0.5 % of
+-its pixels by construction); the fused display is a reliability-gated 3-line inverse-variance fusion. Per line the decoder
+-reports audio SNR, wideband (8–20 kHz) quieting as carrier evidence, and separator parity.
+-
+-**FM-threshold gate.** An rtl_fm discriminator below threshold outputs the tone when the carrier is captured and a ±fs/2
+-noise burst when it is not. The gate `w = exp(-(e/L²)²)` with `e` the 3-sample local power and `L` = 3840 Hz (0.08 FS)
+-suppresses the bursts; it is the single largest gain on the ISS recording (band row-correlation 0.60 → 0.89). In `auto`
+-mode it is applied only when gating raises the in-band tone contrast by ≥ 1 dB somewhere in the file and the signal has
+-the expected rtl_fm scale.
+-
+-## Validation
+-
+-Protocol (SPEC.md §5): synthetic tests first (`tests/test_synthetic.py`: encoder, rtl_fm-faithful FM channel at CNR
+-+6 / 0 / −2 / −4 dB with and without VIS, both paths, pure noise, IQ round trips at 250 kS/s and 1.024 MS/s with a
+-Doppler ramp), then the reference recording (`tests/test_real_recording.py`: VIS 8, leader 322.7945 s, line 0 323.705 s,
+-period 0.1499964 s, recovery path, VIS region replaced by noise, pure-noise cut), then the parameters were frozen
+-(`robot36dec/params_frozen.json`, `FROZEN.md` with the hashes, the change log and all validation numbers). Only after the
+-freeze may `tools/validate_against_references.py` compare a decode with the reference slides:
+-
+-```sh
+-../.venv/bin/python -m pytest tests -q        # 39 tests, ~2 min (the real-recording tests skip if the WAV is absent)
+-../.venv/bin/python tools/validate_against_references.py runs/real_normal/ISS_2026-10-04_10-23-00_luma.png ../event_images \
+-    --control-luma runs/noise_control/ISS_control_430_luma.png --out VALIDATION.md     # blind comparison, after the freeze only
+-```
+-
+-The decodes of the reference recording used for the freeze are in `runs/` (`real_normal`, `real_recovery`,
+-`real_vis_removed`, `noise`, `noise_control`); `FROZEN.md` has the full table. Headline numbers (oracle: leader 322.7945 s,
+-line 0 323.7050 s, period 0.14999640 s, VIS 8):
+-
+-| run | line 0 | period | source / confidence | VIS | band 62-108 row-corr (excess over the noise control) |
+-|---|---|---|---|---|---|
+-| normal path | 323.7043 s (−0.7 ms) | 150.00066 ms (+28 ppm vs oracle, within its 34 ppm 1σ) | vis+sync / 0.94 | 8, parity OK, leader 322.7954 s, z 24.8, conf 1.00 | 0.895 (0.926) |
+-| recovery (header ignored) | 323.7040 s (−1.0 ms, 0 lines) | 150.00041 ms | sync-fit (header-end anchor z 15) / 0.90 | ignored | 0.899 (0.930) |
+-| VIS region replaced by noise | 323.7040 s (0 lines) | 149.99990 ms | sync-fit (dense start + parity) / 0.90 | none credible | 0.899 (0.930) |
+-| pure noise 430–470 s | — | — | sync-weak / 0.00, exit 2 | none | ≈ 0 |
+-
+-Beyond the suite, the 0.2.0 fix pass was checked against the verifiers' adversarial inputs (`.scratch/fix/notes.md`):
+-header-less synthetic frames at CNR −6 dB (flat and fading) are placed on the right line (previously 8–14 lines late),
+-a header-less −2 dB frame is placed correctly for 10/10 seeds (previously 2/6 two lines early), a Robot 72 transmission
+-is rejected with its VIS named (previously "decoded"), clean signals reach a luma correlation of 0.976 with the VIS
+-credited (previously 0.93 and no VIS), a CW interferer 15 dB above the SSTV carrier is rejected and the SSTV tracked, and
+-the 660 s recording decodes in 1.65 GB of RAM (previously 2.68 GB).
+-
+-### Blind comparison with the Series 33 reference slides (after the freeze only)
+-
+-`tools/validate_against_references.py` was run **after** the freeze (FROZEN.md 2026-10-04T20:32:31Z, run 2026-10-04T20:45:58Z; the
+-report records both timestamps and the sha256 of `params_frozen.json`, which matches the frozen hash). The reference
+-images were used **only for scoring the finished decodes**: nothing in the package reads, compares with or is conditioned
+-on a reference image, and no number from the comparison was fed back into any parameter. Method (ported from the earlier
+-analysis scripts): each reference (every file in `../event_images/`: received copies of all 12 slides, received images of
+-unknown slide and non-slide distractors; this project's own `*_pipeline_*` decodes of other stations' audio excluded as
+-not independent) is converted to luminance, resampled to 320×240 and passed through the decoder's channel blur (horizontal
+-Gaussian σ = 9 px; a 3-line average only for the fused displays); the statistic is the Pearson correlation (NCC) per line
+-block at zero shift and at the best small shift (±3 lines, ±4 px); the null distributions are other slides, the same
+-reference at non-overlapping vertical positions (also mirrored) and the decoder's own pure-noise control decodes. Full
+-report: `VALIDATION.md`; figure `runs/validation/VALIDATION_figure.png`; per-line curves and the full ranking as CSV next to it.
+-
+-| decode | lines 0-20 | 20-62 | 62-108 | 108-240 | all | z (band, vs wrong positions) | best other slide (band) |
+-|---|---|---|---|---|---|---|---|
+-| normal path, 1-line | 0.878 | 0.628 | 0.926 | 0.056 | 0.389 | 6.1 / 7.4 | 0.505 (slide 7) |
+-| recovery path (header ignored), 1-line | 0.877 | 0.626 | 0.924 | 0.056 | 0.388 | 6.0 / 7.4 | 0.515 (slide 7) |
+-| fused 3-line (normal / recovery) | 0.851 / 0.850 | 0.644 / 0.642 | 0.928 / 0.927 | 0.070 / 0.071 | 0.397 / 0.396 | 6.0 / 7.2 | 0.516 / 0.527 |
+-| pure-noise control decode (same pipeline) | 0.02 | −0.06 | 0.04 | 0.02 | 0.01 | — | — |
+-| earlier analysis (take2 final, 1-line) | 0.87 | 0.65 | 0.93 | 0.06 | 0.41 | 6.4 | — |
+-
+-Both paths identify **slide 10** (13 of the top 19 ranks are copies of slide 10, the band 62-108 margin over the best copy
+-of any other slide is 0.40-0.42, the other three named copies of slide 10 agree within 0.01); lines 108-240 are at the
+-null (the lower half of the slide is not in the recording); the normal and recovery paths agree within 0.004 in every
+-block; and the frozen decoder reproduces the earlier take2 numbers (0.87 / 0.65 / 0.93 / 0.06) within 0.03, with 86
+-lines (10-19, 26-35, 42-106) above a per-line NCC of 0.5 against 76 before.
+-
+-## Limitations
+-
+-* Robot 36 only; other VIS codes are identified and named but not decoded. A Robot 72 transmission is recognised by its
+-  300 ms pulse train and refused.
+-* A frame that begins inside a deep fade starts at its first detectable line: when the first lines carry neither pulses
+-  nor picture content above the noise level (instantaneous CNR ≲ −7 dB) they are lost and the reported ambiguity grows;
+-  nothing in the signal distinguishes them from the pre-frame noise. With a destroyed header the even/odd parity fixes
+-  odd offsets only. The feasible range and all alternative placements are reported.
+-* The line period of a real recording is known only as well as its pulses allow (the reference recording: ±34 ppm with 62
+-  usable pulses); the ±20 ppm requirement is met on synthetic full frames. Short frames (≲ 60 lines) give periods
+-  60–120 ppm off with a formal standard error of 25–100 ppm, which lowers the reported confidence.
+-* The FM-threshold gate and the chain-estimator settings were verified on an rtl_fm 48 kHz discriminator output; the
+-  `auto` gate refuses inputs at a different scale and the decoder then falls back to the ungated settings. The gate's
+-  auto decision is marginal (noise-driven) at CNR ≥ +6 dB, where the estimator choice makes it irrelevant.
+-* The IQ carrier tracker holds the last smoothed offset through gaps and interpolates linearly across them; a gap of a
+-  minute around closest approach would be bridged by a straight line (harmless inside the 15 kHz channel). A CW
+-  interferer is rejected by its spectral narrowness; a strongly modulated neighbouring FM signal is not.
+-* Lock thresholds of the IQ front end come from synthetic captures only; no real RTL-SDR IQ of this event exists.
+-* Memory: the 660 s WAV peaks at 1.65 GB RSS, a 10-minute 250 kS/s IQ file at 1.63 GB and a 5.5-minute 1.024 MS/s file
+-  at 1.56 GB (the intermediate stream of pass 1 is cached in RAM when it is below 768 MB).
+-* Only one frame per file is decoded (the highest-confidence VIS or the best comb window); multi-slide recordings need
+-  `--start`/`--end`.
++The old README is retained as [README_V02.md](README_V02.md). Its acceptance and validation statements describe v0.2, not this development version. A negative v0.3 verdict does not establish that no image is recoverable.
+--- /dev/null
++++ v0.3/README_V02.md
+@@ -0,0 +1,230 @@
++# robot36dec — a Robot 36 SSTV decoder that does not need the header
++
++`robot36dec` (0.2.0) decodes Robot 36 SSTV pictures from FM-demodulated audio (48 kHz mono WAV, rtl_fm style) or directly
++from RTL-SDR unsigned 8-bit IQ captures. It was built from the analysis of the ISS recording
++`audio/ISS_2026-10-04_10-23-00.wav` (a pass received below the FM threshold with only partial carrier capture) and it
++keeps the two properties that recording demanded:
++
++* **a valid VIS header is not required** — a normal path reads the calibration leader / break / VIS code and a recovery
++  path assumes Robot 36 and recovers the line timing from the 1200 Hz sync pulses, the ~150 ms line period, the
++  autocorrelation comb and inter-line coherence;
++* **the timing is redundant** — line 0 and the line period are estimated by several independent methods (VIS stop-bit
++  end, per-line sync-pulse fit, ACF comb fit, phase fold, header-end signature, picture presence, separator parity, image
++  coherence) and combined with explicit agreement and confidence numbers.
++
++Input files are opened read-only and never modified. No reference image is ever read by the decoder; the only place
++references may be used is the separate blind-validation tool `tools/validate_against_references.py`, which the package
++does not import.
++
++## Install
++
++```sh
++# Python >= 3.11 with numpy, scipy, soundfile, pillow (matplotlib only for --plots)
++uv pip install --python <your-python> numpy scipy soundfile pillow matplotlib pytest
++# or: pip install numpy scipy soundfile pillow matplotlib pytest
++```
++
++The package is pure Python; run it from this directory (`python -m robot36dec ...`) or add the directory to `PYTHONPATH`.
++The project venv used for development is `../.venv/bin/python` (Python 3.13, numpy 2.5, scipy 1.18, soundfile 0.14,
++Pillow 12, matplotlib 3.11).
++
++## Usage
++
++### FM-demodulated WAV (48 kHz mono, rtl_fm output)
++
++```sh
++python -m robot36dec decode recording.wav --out out/ --plots
++python -m robot36dec decode recording.wav --out out/ --mode recovery          # ignore the header, sync-pulse timing only
++python -m robot36dec decode recording.wav --out out/ --start 300 --end 380     # analyse a window (times are kept absolute)
++python -m robot36dec decode recording.wav --out out/ --t0 323.705 --period 0.1499964   # force the timing
++```
++
++Audio is converted to **instantaneous frequency deviation in Hz**: an rtl_fm int16 full scale corresponds to a
++deviation of `fs_out` = 48000 Hz (`--wav-fullscale-hz`, default 48000). Other sample rates are resampled to 48 kHz (the
++original rate and the resampling ratio are reported). For generic sound-card audio the scale is unknown; all estimators
++are scale-free, only the FM-threshold gate depends on it and its `auto` mode detects when it does not apply.
++
++### RTL-SDR IQ (unsigned 8-bit interleaved I/Q)
++
++```sh
++python -m robot36dec decode capture.u8 --iq --iq-rate 1024000 --center-freq 437.540e6 --signal-freq 437.550e6 --out out/
++```
++
++The IQ front end (`iqdemod.py`) is chunked (buffered reads, the file is never loaded whole): DC removal, coarse channel
++selection around `--signal-freq` (default 437.550 MHz), carrier search within ±15 kHz by 0.5 s block spectra with a
++narrowband-interferer test (a CW carrier whose power sits in ~125 Hz is rejected and the search repeated with its channel
++masked), a Doppler-tolerant carrier tracker (hold/predict through gaps, slew limit ~300 Hz/s), fine mixing by the smoothed
++track, polyphase resampling to 48 kHz, a 15 kHz channel low-pass, polar discriminator and 75 µs de-emphasis. The carrier
++track (time, offset, SNR, lock) is written to the diagnostics JSON and summarised in the log; when no block locks (wrong
++`--center-freq`, `--signal-freq` or `--iq-rate`) the decoder says so explicitly. Sample rates 240 kS/s to 2.4 MS/s were
++tested; the chain runs 28–40× real time on 5–10 minute files.
++
++### Options
++
++| option | meaning |
++|---|---|
++| `--mode auto\|normal\|recovery` | `auto` (default): normal path when a credible Robot 36 VIS is found, else recovery; `normal`: use a Robot 36 VIS candidate of any confidence ≥ 0.2 (else recovery); `recovery`: ignore the header entirely |
++| `--t0 S`, `--period S` | override line-0 time (seconds into the input) and line period |
++| `--start S`, `--end S` | analyse only this window (absolute times are preserved) |
++| `--gate auto\|on\|off` | FM-threshold gate (default `auto`) |
++| `--estimator chain\|soft` | luminance estimator (default `chain`, see below) |
++| `--window-ms`, `--wav-fullscale-hz`, `--params FILE.json` | analysis window, WAV scale, parameter overrides |
++| `--plots` | diagnostic plots (needs matplotlib) |
++| `--save-audio` | also write the demodulated and the preprocessed audio as float WAV into `--out` |
++| `--basename NAME`, `--quiet` | output prefix (default: input stem), suppress the log |
++
++Exit code 0 = a credible Robot 36 signal was decoded, 2 = no credible Robot 36 signal (diagnostics are still written and
++the summary names the reason, e.g. `VIS 12 = Robot 72 identified ... sync pulses only on every other line`), 1 = error
++(including usage errors).
++
++## Outputs (all inside `--out`, prefixed with the input stem)
++
++| file | content |
++|---|---|
++| `<base>_image.png`, `_image_x3.png` | RGB reconstruction (320×240; ×3 nearest-neighbour) |
++| `<base>_luma.png`, `_luma_x3.png` | luminance (grayscale) reconstruction, one-line estimator |
++| `<base>_luma_fused.png`, `_luma_fused_masked(_x3).png` | reliability-gated 3-line fusion, with/without the unreliable pixels greyed |
++| `<base>_image_fused_masked.png`, `<base>_mask.png` | fused RGB with unreliable pixels grey; the reliability mask |
++| `<base>_diagnostics.json` | everything numeric: timing (t_line0, period, source, confidence, agreement of all estimators incl. placement anchor and ambiguity, period standard error, pulse-pattern / Robot 36 structure test, signal confidence), VIS candidates (code, mode name, parity, bit tones, z-score, confidence, whether used for the timing), period estimate (ACF comb z at 150 and 300 ms, comb-fit period and its standard error, candidates for other modes), line-sync summary on the final timing (detected pulse times, inliers, residual sd) and the fit's statistics, gate decision and statistics, whitening decision, per-block SNR / quieting / reliable fraction / row coherence, the signal decision with its criteria and reason, parameters, software version, IQ carrier track and lock summary |
++| `<base>_line_sync.csv` | per line of the final frame: expected and detected sync-pulse time, residual, strength, inlier flag |
++| `<base>_line_metrics.csv` | per line: start time, audio SNR, wideband quieting, separator parity, reliable fraction |
++| `<base>_plots/` (`--plots`) | `header_vis.png` (spectrogram around the header with the ideal VIS tone sequence), `sync_acf.png` (ACF comb), `sync_raster.png` (sync likelihood folded at the final timing), `line_metrics.png`, `freq_raster.png` (dominant-frequency raster next to the decoded luminance) |
++
++## How it works
++
++Both paths share the audio chain: DC/Doppler removal (running trimmed mean, 0.5 s) → FM-threshold gate (see below) →
++400–3200 Hz band-pass.
++
++**Normal path.** `header.find_vis` correlates a template of the whole 910 ms VIS header (leader 1900 Hz 300 ms, break
++1200 Hz 10 ms, leader, start bit 1200 Hz 30 ms, eight bit slots in the 1100-or-1300 Hz band, stop bit) with band-energy
++ratios z-scored against the file's no-tone frames (so that a clean picture does not inflate the false-alarm statistics;
++the header z is ~16 from CNR 0 to +20 dB and 25 on the reference recording), refines each peak at 1 ms hop jointly over
++all 128 codes, decodes the bits with a sampling-offset scan (stability plateau), checks parity and reports z-score, noise
++maximum, mode name and a confidence in [0, 1]. A Robot 36 candidate (code 8) with confidence ≥ 0.6 defines line 0 at the
++end of the stop bit; other codes are reported by name but not decoded.
++
++**Recovery path** (`--mode recovery`, or `auto` without a credible header). `sync.sync_likelihood` turns the audio into
++the share of the 900–2600 Hz energy that lies in the 1200 Hz sync band (9 ms Hann windows, 0.5 ms hop).
++`estimate_period_acf` detects the Robot 36 comb (ACF peaks at k·150 ms minus the half-period troughs, in robust-sd
++units; the same statistic at 300 ms exposes a Robot 72 train) and refines the period by a weighted fit of the comb-peak
++lags over long lags; `fold_phase` finds the pulse phase; `track_lines` searches every line for its pulse (±20 ms), fits a
++robust line through the inliers (tolerance shrinking 12 → 4 ms) and rejects 30 ms VIS-bit plateaus by a pulse-shape
++test. `timing.resolve_timing` then places the 240-line frame on the pulse grid: the feasible range of integer placements
++comes from the detected pulses (a pulse that cannot share a frame with the last one is noise) and the carrier-presence
++span, and the anchor is, in order of priority, the header-end signature (a 1200 Hz stop bit of tone-like strength
++immediately before a line start that is followed by picture tones), a Robot 36 VIS candidate with valid parity and
++agreeing bit tones (auto mode only), the *dense start* (the first pulse followed by enough further pulses within 12 or 24
++lines, 'enough' calibrated against the measured false-inlier rate so that isolated noise pulses never start a frame), the
++first supported pulse, or the midpoint. The per-line tone SNR then checks the start: when the picture level is resolvable
++above the pre-frame noise level (pure receiver noise gives −8.9 dB, a picture at CNR −6 dB about −6 dB), a pulse on a
++noise-level line cannot be the first line and the start moves to the first pulse on a picture line; the separator-tone
++parity (1500 Hz even / 2300 Hz odd lines) fixes an even/odd error, using the same picture evidence to break ties. A
++pulse train on every other line, or a comb that is stronger at 300 ms than at 150 ms, marks a non-Robot-36 line structure
++(Robot 72): the confidence is cut and the transmission is reported, not decoded. The period is the inverse-variance
++combination of the sync fit and the ACF comb fit; a coherence refinement (sync-column contrast + adjacent-row correlation
++of a quick decode on a t0 ±6 ms / ±60 ppm grid) is always reported and adopted only when the sync fit is weak. The
++confidence carries the integer-line ambiguity (expected number of undetected leading lines from the local detection
++density, fade-in at the start, excess of pulses before the chosen start) and the period's standard error; the signal
++evidence alone (`confidence_signal`) decides the exit code. The feasible range and every alternative placement are written
++to the diagnostics.
++
++**Image estimation** (`decode.decode_robot36`). 12 ms Hann spectra at every pixel centre on a 1350–2450 Hz grid, whitened
++by the receiver-noise spectral shape measured on the file's own no-signal stretches (when there is none, the whole-file
++shape is used only if it spans ≤ 8 dB: a clean picture's whole-file "shape" is its own tone leakage); luminance by a
++Gaussian Markov chain along the line (forward–backward posterior mean, evidence temperature T = 8, σ = 80 Hz/px; T = 16,
++σ = 40 when the gate is off) in the FM-threshold regime, or by the soft posterior-mean estimator when the frame's median
++per-line SNR is ≥ 8 dB (above the FM threshold the chain prior only blurs sharp content); chroma by the soft estimator
++with 3-line-pair averaging; JPEG YCrCb → RGB. A reliability mask comes from the smoothed posterior sd, thresholded at the
++0.5th percentile of a *control decode* of the file's own noise with the identical pipeline (so pure noise keeps 0.5 % of
++its pixels by construction); the fused display is a reliability-gated 3-line inverse-variance fusion. Per line the decoder
++reports audio SNR, wideband (8–20 kHz) quieting as carrier evidence, and separator parity.
++
++**FM-threshold gate.** An rtl_fm discriminator below threshold outputs the tone when the carrier is captured and a ±fs/2
++noise burst when it is not. The gate `w = exp(-(e/L²)²)` with `e` the 3-sample local power and `L` = 3840 Hz (0.08 FS)
++suppresses the bursts; it is the single largest gain on the ISS recording (band row-correlation 0.60 → 0.89). In `auto`
++mode it is applied only when gating raises the in-band tone contrast by ≥ 1 dB somewhere in the file and the signal has
++the expected rtl_fm scale.
++
++## Validation
++
++Protocol (SPEC.md §5): synthetic tests first (`tests/test_synthetic.py`: encoder, rtl_fm-faithful FM channel at CNR
+++6 / 0 / −2 / −4 dB with and without VIS, both paths, pure noise, IQ round trips at 250 kS/s and 1.024 MS/s with a
++Doppler ramp), then the reference recording (`tests/test_real_recording.py`: VIS 8, leader 322.7945 s, line 0 323.705 s,
++period 0.1499964 s, recovery path, VIS region replaced by noise, pure-noise cut), then the parameters were frozen
++(`robot36dec/params_frozen.json`, `FROZEN.md` with the hashes, the change log and all validation numbers). Only after the
++freeze may `tools/validate_against_references.py` compare a decode with the reference slides:
++
++```sh
++../.venv/bin/python -m pytest tests -q        # 39 tests, ~2 min (the real-recording tests skip if the WAV is absent)
++../.venv/bin/python tools/validate_against_references.py runs/real_normal/ISS_2026-10-04_10-23-00_luma.png ../event_images \
++    --control-luma runs/noise_control/ISS_control_430_luma.png --out VALIDATION.md     # blind comparison, after the freeze only
++```
++
++The decodes of the reference recording used for the freeze are in `runs/` (`real_normal`, `real_recovery`,
++`real_vis_removed`, `noise`, `noise_control`); `FROZEN.md` has the full table. Headline numbers (oracle: leader 322.7945 s,
++line 0 323.7050 s, period 0.14999640 s, VIS 8):
++
++| run | line 0 | period | source / confidence | VIS | band 62-108 row-corr (excess over the noise control) |
++|---|---|---|---|---|---|
++| normal path | 323.7043 s (−0.7 ms) | 150.00066 ms (+28 ppm vs oracle, within its 34 ppm 1σ) | vis+sync / 0.94 | 8, parity OK, leader 322.7954 s, z 24.8, conf 1.00 | 0.895 (0.926) |
++| recovery (header ignored) | 323.7040 s (−1.0 ms, 0 lines) | 150.00041 ms | sync-fit (header-end anchor z 15) / 0.90 | ignored | 0.899 (0.930) |
++| VIS region replaced by noise | 323.7040 s (0 lines) | 149.99990 ms | sync-fit (dense start + parity) / 0.90 | none credible | 0.899 (0.930) |
++| pure noise 430–470 s | — | — | sync-weak / 0.00, exit 2 | none | ≈ 0 |
++
++Beyond the suite, the 0.2.0 fix pass was checked against the verifiers' adversarial inputs (`.scratch/fix/notes.md`):
++header-less synthetic frames at CNR −6 dB (flat and fading) are placed on the right line (previously 8–14 lines late),
++a header-less −2 dB frame is placed correctly for 10/10 seeds (previously 2/6 two lines early), a Robot 72 transmission
++is rejected with its VIS named (previously "decoded"), clean signals reach a luma correlation of 0.976 with the VIS
++credited (previously 0.93 and no VIS), a CW interferer 15 dB above the SSTV carrier is rejected and the SSTV tracked, and
++the 660 s recording decodes in 1.65 GB of RAM (previously 2.68 GB).
++
++### Blind comparison with the Series 33 reference slides (after the freeze only)
++
++`tools/validate_against_references.py` was run **after** the freeze (FROZEN.md 2026-10-04T20:32:31Z, run 2026-10-04T20:45:58Z; the
++report records both timestamps and the sha256 of `params_frozen.json`, which matches the frozen hash). The reference
++images were used **only for scoring the finished decodes**: nothing in the package reads, compares with or is conditioned
++on a reference image, and no number from the comparison was fed back into any parameter. Method (ported from the earlier
++analysis scripts): each reference (every file in `../event_images/`: received copies of all 12 slides, received images of
++unknown slide and non-slide distractors; this project's own `*_pipeline_*` decodes of other stations' audio excluded as
++not independent) is converted to luminance, resampled to 320×240 and passed through the decoder's channel blur (horizontal
++Gaussian σ = 9 px; a 3-line average only for the fused displays); the statistic is the Pearson correlation (NCC) per line
++block at zero shift and at the best small shift (±3 lines, ±4 px); the null distributions are other slides, the same
++reference at non-overlapping vertical positions (also mirrored) and the decoder's own pure-noise control decodes. Full
++report: `VALIDATION.md`; figure `runs/validation/VALIDATION_figure.png`; per-line curves and the full ranking as CSV next to it.
++
++| decode | lines 0-20 | 20-62 | 62-108 | 108-240 | all | z (band, vs wrong positions) | best other slide (band) |
++|---|---|---|---|---|---|---|---|
++| normal path, 1-line | 0.878 | 0.628 | 0.926 | 0.056 | 0.389 | 6.1 / 7.4 | 0.505 (slide 7) |
++| recovery path (header ignored), 1-line | 0.877 | 0.626 | 0.924 | 0.056 | 0.388 | 6.0 / 7.4 | 0.515 (slide 7) |
++| fused 3-line (normal / recovery) | 0.851 / 0.850 | 0.644 / 0.642 | 0.928 / 0.927 | 0.070 / 0.071 | 0.397 / 0.396 | 6.0 / 7.2 | 0.516 / 0.527 |
++| pure-noise control decode (same pipeline) | 0.02 | −0.06 | 0.04 | 0.02 | 0.01 | — | — |
++| earlier analysis (take2 final, 1-line) | 0.87 | 0.65 | 0.93 | 0.06 | 0.41 | 6.4 | — |
++
++Both paths identify **slide 10** (13 of the top 19 ranks are copies of slide 10, the band 62-108 margin over the best copy
++of any other slide is 0.40-0.42, the other three named copies of slide 10 agree within 0.01); lines 108-240 are at the
++null (the lower half of the slide is not in the recording); the normal and recovery paths agree within 0.004 in every
++block; and the frozen decoder reproduces the earlier take2 numbers (0.87 / 0.65 / 0.93 / 0.06) within 0.03, with 86
++lines (10-19, 26-35, 42-106) above a per-line NCC of 0.5 against 76 before.
++
++## Limitations
++
++* Robot 36 only; other VIS codes are identified and named but not decoded. A Robot 72 transmission is recognised by its
++  300 ms pulse train and refused.
++* A frame that begins inside a deep fade starts at its first detectable line: when the first lines carry neither pulses
++  nor picture content above the noise level (instantaneous CNR ≲ −7 dB) they are lost and the reported ambiguity grows;
++  nothing in the signal distinguishes them from the pre-frame noise. With a destroyed header the even/odd parity fixes
++  odd offsets only. The feasible range and all alternative placements are reported.
++* The line period of a real recording is known only as well as its pulses allow (the reference recording: ±34 ppm with 62
++  usable pulses); the ±20 ppm requirement is met on synthetic full frames. Short frames (≲ 60 lines) give periods
++  60–120 ppm off with a formal standard error of 25–100 ppm, which lowers the reported confidence.
++* The FM-threshold gate and the chain-estimator settings were verified on an rtl_fm 48 kHz discriminator output; the
++  `auto` gate refuses inputs at a different scale and the decoder then falls back to the ungated settings. The gate's
++  auto decision is marginal (noise-driven) at CNR ≥ +6 dB, where the estimator choice makes it irrelevant.
++* The IQ carrier tracker holds the last smoothed offset through gaps and interpolates linearly across them; a gap of a
++  minute around closest approach would be bridged by a straight line (harmless inside the 15 kHz channel). A CW
++  interferer is rejected by its spectral narrowness; a strongly modulated neighbouring FM signal is not.
++* Lock thresholds of the IQ front end come from synthetic captures only; no real RTL-SDR IQ of this event exists.
++* Memory: the 660 s WAV peaks at 1.65 GB RSS, a 10-minute 250 kS/s IQ file at 1.63 GB and a 5.5-minute 1.024 MS/s file
++  at 1.56 GB (the intermediate stream of pass 1 is cached in RAM when it is below 768 MB).
++* Only one frame per file is decoded (the highest-confidence VIS or the best comb window); multi-slide recordings need
++  `--start`/`--end`.
+--- v0.2/robot36dec/__init__.py
++++ v0.3/robot36dec/__init__.py
+@@ -1,2 +1,2 @@
+ """robot36dec: Robot 36 SSTV decoder with header-free timing recovery (built from the ISS recording analysis)."""
+-__version__ = "0.2.0"
++__version__ = "0.3.0.dev1"
+--- /dev/null
++++ v0.3/robot36dec/candidates.py
+@@ -0,0 +1,134 @@
++"""Candidate-preserving IQ analysis. Output includes every spectral trajectory,
++all tested audio variants, measured VIS bits, geometry, and explicit decisions.
++The input and all trajectories are independent of past decoder classifications.
++"""
++import json,math,tempfile,time,copy,hashlib
++from pathlib import Path
++from dataclasses import replace,asdict
++import numpy as np
++from scipy import signal
++from . import rf,protocol,__version__
++from .io import IQSpec
++from .params import Params
++
++
++def _clean(value):
++    if isinstance(value,dict):return {k:_clean(v) for k,v in value.items()}
++    if isinstance(value,(list,tuple)):return [_clean(v) for v in value]
++    if isinstance(value,np.generic):return _clean(value.item())
++    if isinstance(value,float) and not math.isfinite(value):return None
++    return value
++
++
++def _audio_variants(raw):
++    # Both de-emphasis choices and automatic impulse gate; never use reconstructed
++    # pixels to select a variant. Multiplicity is recorded and null-tested.
++    from .preprocess import remove_dc,threshold_gate,bandpass
++    from .iqdemod import _Deemphasis
++    for deemph in (0.,75.):
++        x=raw if deemph==0 else _Deemphasis(48000,deemph*1e-6).process(raw)
++        p=Params.default();p.gate_mode='auto'
++        dc=remove_dc(x,48000,p.dc_window_s)
++        for gating in ('off','auto'):
++            p.gate_mode=gating
++            gated,info=threshold_gate(dc,48000,p)
++            xb=bandpass(gated,48000,p.bp_lo_hz,p.bp_hi_hz)
++            yield dict(deemphasis_us=deemph,gate=gating,gate_applied=bool(info.applied)),xb
++
++
++def analyze(path,out,spec,params=None,bandwidths=(11000.,15000.,25000.),receiver_ppm=0.,uncertainty_ppm=20.,progress=None,render=True):
++    params=params or Params.default();out=Path(out);out.mkdir(parents=True,exist_ok=True)
++    if uncertainty_ppm<0 or not math.isfinite(receiver_ppm) or not math.isfinite(uncertainty_ppm):raise ValueError('finite receiver PPM and nonnegative uncertainty are required')
++    if not bandwidths or any(not 1000<=bw<45000 for bw in bandwidths):raise ValueError('channel bandwidths must lie in [1000,45000) Hz')
++    # Positive ppm means measured RF frequencies are shifted positive at the
++    # nominal baseband; expose correction and remaining uncertainty separately.
++    calibrated=replace(spec,signal_freq=spec.signal_freq+spec.signal_freq*receiver_ppm*1e-6)
++    user_search=params.iq_search_hz
++    required_search=11250+spec.signal_freq*uncertainty_ppm*1e-6+1000
++    params=replace(params,iq_search_hz=max(params.iq_search_hz,required_search),iq_channel_bw_hz=max(bandwidths))
++    started=time.time()
++    package=Path(__file__).parent
++    source_hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(package.glob('*.py'))}
++    source_hashes['params_frozen.json']=hashlib.sha256((package/'params_frozen.json').read_bytes()).hexdigest()
++    report=dict(version=__version__,source_sha256=source_hashes,parameters=asdict(params),input=str(Path(path).resolve()),metadata=dict(sample_rate=spec.fs,
++        format='unsigned 8-bit interleaved I,Q',center_frequency_hz=spec.center_freq,
++        nominal_frequency_hz=spec.signal_freq,receiver_ppm=receiver_ppm,uncertainty_ppm=uncertainty_ppm),
++        verdict='NO EVIDENCE',candidates=[],limitations=[
++        'RF candidate list is threshold-limited, not an exhaustive list of all physical transmitters.',
++        'A spectral trajectory is not a carrier lock or identification.',
++        'Weak evidence and negative outcomes do not prove absence of a recoverable image.',
++        'No orbital ephemeris: reported residual includes Doppler and oscillator error.',
++        'Confidence thresholds are engineering rules, not posterior probabilities.'])
++    with tempfile.TemporaryDirectory(prefix='rf-cache-',dir=out) as directory:
++        cache,plan,P,freqs,counts,duration=rf.extract_intermediate(path,calibrated,params,directory,progress)
++        report.update(duration_s=duration,search_user_hz=user_search,search_required_hz=required_search,search_requested_hz=params.iq_search_hz,search_effective_hz=plan['search'],
++                      intermediate_rate=plan['f_int'],bandwidths_hz=list(bandwidths),
++                      front_end_delay_s=(len(plan['h1'])-1)/(2*spec.fs) if plan['h1'] is not None else 0.,
++                      audio_timing_grid_s=.0005,rf_time_grid_s=params.iq_block_s,spectral_bin_hz=float(freqs[1]-freqs[0]))
++        if plan['search']+1<params.iq_search_hz:raise ValueError('requested frequency uncertainty exceeds available capture/passband')
++        np.savez_compressed(out/'rf_spectra.npz',power=P,freqs=freqs,counts=counts,block_s=params.iq_block_s)
++        rows=rf.spectral_candidates(P,freqs,counts,plan['search'],plan['f_pass1'],(300.,)+tuple(bandwidths))
++        records=rf.candidate_records(rows,calibrated,params.iq_block_s,duration)
++        report['candidates']=records
++        _write(report,out)
++        for j,record in enumerate(records):
++            if progress:progress('candidate '+record['id'],j/max(1,len(records)))
++            # All candidates are demodulated, including single-block RF peaks.
++            # Add context uniformly, not based on where a prior decoder found pulses.
++            a=max(0,record['start_s']-2.);b=min(duration,record['end_s']+2.)
++            record['audio_window_s']=[a,b]
++            best=None;best_audio=None
++            span=b-a
++            windows=list(np.arange(0,max(0,span-40)+.001,20.))
++            if not windows or windows[-1]+40<span-.01:windows.append(max(0,span-40))
++            for bw in bandwidths:
++                for start in windows:
++                    # Bound RAM independently of recording/candidate duration.
++                    raw=rf.demodulate_candidate(cache,plan,record,a+start,min(a+start+40,b),bw)
++                    off_cache={}
++                    for variant,chunk in _audio_variants(raw):
++                        key=variant['deemphasis_us']
++                        if variant['gate']=='auto' and not variant['gate_applied']:
++                            ev=copy.deepcopy(off_cache[key]);ev['variant']=variant
++                            ev['reused_identical_audio']=True
++                        else:
++                            ev=protocol.acquire_cadence(chunk,48000)
++                            ev.update(variant=variant,channel_bw_hz=bw,window_start_s=float(a+start))
++                            vis=protocol.inspect_vis(chunk,48000,a+start,params) if len(chunk)>=48000 else []
++                            ev['vis']=vis
++                            ev['verdict']=protocol.classify_evidence(ev)
++                            if variant['gate']=='off':off_cache[key]=ev
++                        record['evaluations'].append(ev)
++                        score=sum(v.get('z',0) for v in ev.values() if isinstance(v,dict) and 'z'in v)
++                        rank=({'NO EVIDENCE':0,'INCONCLUSIVE':1,'PROBABLE':2,'CONFIRMED ROBOT36':3}[ev['verdict']],score)
++                        if best is None or rank>best[0]:best=(rank,ev);best_audio=(chunk.copy(),a+start)
++            record['best_evidence']=best[1] if best else None
++            record['verdict']=best[1]['verdict'] if best else 'NO EVIDENCE'
++            record['reason']=best[1]['reason'] if best else 'no analyzable audio'
++            record['rf_status']='protocol supported' if record['verdict'] in ('PROBABLE','CONFIRMED ROBOT36') else 'RF hypothesis, unverified'
++            if render and record['verdict'] in ('PROBABLE','CONFIRMED ROBOT36'):
++                _render(best_audio,best[1],params,out/record['id'],record)
++            _write(report,out)
++    rank={'NO EVIDENCE':0,'INCONCLUSIVE':1,'PROBABLE':2,'CONFIRMED ROBOT36':3}
++    report['verdict']=max((r['verdict'] for r in report['candidates']),key=rank.get,default='NO EVIDENCE')
++    report['elapsed_s']=time.time()-started;_write(report,out)
++    return report
++
++
++def _write(report,out):
++    temp=out/'candidates.json.tmp';temp.write_text(json.dumps(_clean(report),indent=2,allow_nan=False)+'\n');temp.replace(out/'candidates.json')
++
++
++def _render(audio,ev,params,out,record):
++    from .decode import decode_robot36
++    from .timing import Timing
++    from PIL import Image
++    out.mkdir(exist_ok=True)
++    x,absolute=audio
++    aligned=protocol.aligned_robot36_headers(ev)
++    origin=aligned[0]['frame_origin_s'] if aligned else absolute+ev['t_line0_s']+(ev['period_s'] if ev.get('parity_flipped') else 0.)
++    timing=Timing(t_line0=origin,period=ev['period_s'],source='v0.3 measured geometry',confidence=0.,agreement={'protocol_evidence':ev})
++    result=decode_robot36(x,48000,absolute,timing,params,raw_audio=x,gate_applied=ev['variant']['gate_applied'])
++    Image.fromarray(result.rgb).save(out/'robot36.png')
++    Image.fromarray(np.uint8(np.clip(result.Y,0,255))).save(out/'luminance.png')
++    record['images']=[str(out/'robot36.png'),str(out/'luminance.png')]
+--- v0.2/robot36dec/cli.py
++++ v0.3/robot36dec/cli.py
+@@ -42,6 +42,11 @@
+     d.add_argument("--plots", action="store_true")
+     d.add_argument("--save-audio", action="store_true", help="also write the demodulated/preprocessed audio as WAV into --out")
+     d.add_argument("--quiet", action="store_true")
++    d.add_argument("--iq-search-hz", type=float, default=30000.)
++    d.add_argument("--receiver-ppm", type=float, default=0.)
++    d.add_argument("--uncertainty-ppm", type=float, default=20.)
++    d.add_argument("--channel-bandwidths", default="11000,15000,25000")
++
+     return p
+ 
+ 
+@@ -189,58 +194,19 @@
+ 
+ 
+ def _signal_decision(timing, vis_best, period_est, line_sync, result, params, mode):
+-    """Exit-code decision. Pure noise must fail every criterion: a credible Robot 36 VIS, or the ACF comb significance
+-    together with credible sync inliers, or a confident timing together with comb / reliability evidence. Every pulse- or
+-    comb-based branch also requires the Robot 36 line STRUCTURE (timing.agreement['robot36_structure_ok']: pulses on both
+-    line parities and no stronger comb at twice the period; a Robot 72 transmission fails both) and a timing confidence
+-    of at least 0.3 (a wrongly declared sample rate gives clean tones at wrong frequencies, 'reliable' pixels and a comb,
+-    but no credible timing). Returns (detected, score, criteria) where criteria['reason'] explains a rejection."""
+-    min_z = float(getattr(params, 'detect_min_comb_z', 5.0)); min_inl = int(getattr(params, 'detect_min_inliers', 8))
+-    min_rel = float(getattr(params, 'detect_min_frac_reliable', 0.03)); min_tc = float(getattr(params, 'detect_min_timing_conf', 0.5))
+-    comb_z = float(getattr(period_est, 'comb_z', 0.0) or 0.0)
+-    n_inl = int(getattr(line_sync, 'n_inliers', 0) or 0)
+-    credible = getattr(line_sync, 'credible', None)          # n >= 8 and above the false-inlier background (noise: 6-13 raw inliers)
+-    frac_rel = float(result.frac_reliable)
+-    agr = getattr(timing, 'agreement', {}) or {}
+-    # the decision uses the confidence that a signal with this period/phase exists; the placement ambiguity and the period
+-    # precision lower timing.confidence but do not make the signal absent
+-    tconf = float(agr.get('confidence_signal', timing.confidence))
+-    structure_ok = bool(agr.get('robot36_structure_ok', True))
+-    pat = agr.get('pulse_pattern') or {}
+-    vis_ok = bool(vis_best is not None and mode != 'recovery' and vis_best.vis_code == ROBOT36.vis and vis_best.confidence >= 0.6)
+-    other_vis = (vis_best is not None and mode != 'recovery' and vis_best.vis_code not in (None, ROBOT36.vis) and vis_best.confidence >= 0.6)
+-    comb_ok = comb_z >= min_z and structure_ok; rel_ok = frac_rel >= min_rel; tconf_ok = tconf >= min_tc
+-    sync_ok = (n_inl >= min_inl) and (bool(credible) if credible is not None else True) and structure_ok
+-    weak_tc = tconf >= 0.3
+-    detected = vis_ok or (comb_ok and sync_ok and weak_tc) or (tconf_ok and (comb_ok or rel_ok)) or (rel_ok and sync_ok and weak_tc)
+-    reasons = []
+-    if not detected:
+-        if other_vis:
+-            reasons.append(f"VIS {vis_best.vis_code} = {VIS_TABLE.get(vis_best.vis_code, vis_best.mode_name)} identified (confidence {vis_best.confidence:.2f}): not a Robot 36 header")
+-        if not structure_ok:
+-            if pat.get('alternating'):
+-                reasons.append(f"sync pulses only on every other line ({pat.get('n_even')} even / {pat.get('n_odd')} odd): a 300 ms line period, not Robot 36")
+-            if agr.get('comb_z_half_rate') is not None and float(agr['comb_z_half_rate']) > max(4.0, 0.5 * comb_z):
+-                reasons.append(f"the sync comb is stronger at 300 ms (z {float(agr['comb_z_half_rate']):.1f}) than at 150 ms (z {comb_z:.1f})")
+-        if comb_z < min_z: reasons.append(f"comb z {comb_z:.1f} < {min_z:g}")
+-        if not (n_inl >= min_inl and (bool(credible) if credible is not None else True)):
+-            reasons.append(f"{n_inl} sync inliers not credible above the false-inlier background")
+-        if not weak_tc: reasons.append(f"timing confidence {tconf:.2f} < 0.3")
+-        elif not tconf_ok: reasons.append(f"timing confidence {tconf:.2f} < {min_tc:g}")
+-        if not rel_ok: reasons.append(f"reliable pixels {frac_rel * 100:.1f} % < {min_rel * 100:g} %")
+-    elif other_vis:
+-        reasons.append(f"note: VIS {vis_best.vis_code} = {VIS_TABLE.get(vis_best.vis_code, vis_best.mode_name)} (confidence {vis_best.confidence:.2f}) "
+-                       f"contradicts the Robot 36 line structure found in the sync pulses; decoded as Robot 36 on the strength of the pulses")
+-    crit = dict(vis_credible=vis_ok, other_mode_vis=bool(other_vis), comb_ok=comb_ok, sync_inliers_ok=sync_ok,
+-                sync_fit_credible=(None if credible is None else bool(credible)), robot36_structure_ok=structure_ok,
+-                reliable_pixels_ok=rel_ok, timing_confidence_ok=tconf_ok, timing_confidence_weak_ok=weak_tc,
+-                comb_z=comb_z, comb_z_half_rate=agr.get('comb_z_half_rate'), n_sync_inliers=n_inl, frac_reliable=frac_rel, timing_confidence=float(timing.confidence),
+-                signal_confidence=tconf,
+-                thresholds=dict(comb_z=min_z, n_inliers=min_inl, frac_reliable=min_rel, timing_confidence=min_tc, timing_confidence_weak=0.3),
+-                reason='; '.join(reasons))
+-    score = 0.35 * float(vis_ok) + 0.25 * min(1.0, comb_z / (2 * min_z)) + 0.2 * min(1.0, frac_rel / (3 * min_rel)) + 0.2 * tconf
+-    if not structure_ok: score *= 0.5
+-    return bool(detected), float(score), crit
++    """Measured protocol structure is mandatory; pixel reliability is not identity."""
++    agr=getattr(timing,'agreement',{}) or {}
++    evidence=agr.get('protocol_evidence',{})
++    structure=bool(evidence.get('valid',False)) and bool(agr.get('robot36_structure_ok',True))
++    vis_ok=bool(vis_best is not None and vis_best.vis_code==8 and vis_best.parity_ok and vis_best.confidence>=.6)
++    confidence=float(agr.get('confidence_signal',timing.confidence))
++    detected=structure
++    from .protocol import classify_evidence
++    verdict=classify_evidence(evidence) if detected else 'NO EVIDENCE'
++    return detected, confidence if detected else 0.,dict(robot36_structure_ok=structure,
++            protocol_evidence=evidence,vis_credible=vis_ok,signal_confidence=confidence,
++            reason=evidence.get('reason','no measured protocol evidence'),
++            verdict=verdict)
+ 
+ 
+ def _fmt_runs(runs):
+@@ -276,6 +242,23 @@
+     log = (lambda *a, **k: None) if quiet else (lambda *a, **k: print(*a, **k, flush=True))
+     stage = 'setup'
+     try:
++        if args.iq:
++            if args.iq_rate is None or args.center_freq is None:
++                raise ValueError('--iq requires --iq-rate and --center-freq')
++            if args.t0 is not None or args.period is not None or args.start or args.end is not None:
++                raise ValueError('candidate-preserving IQ analysis scans the whole input; timing overrides/windows are WAV-only')
++            from .candidates import analyze
++            from .io import IQSpec
++            params=_load_params(args);params.iq_search_hz=args.iq_search_hz
++            last=[0.]
++            def progress(stage,fraction):
++                now=time.time()
++                if now-last[0]>=20:log(f'{stage}: {fraction:.0%}');last[0]=now
++            report=analyze(args.input,outdir,IQSpec(args.iq_rate,args.center_freq,args.signal_freq),params,
++                           tuple(float(v) for v in args.channel_bandwidths.split(',')),args.receiver_ppm,
++                           args.uncertainty_ppm,progress=progress)
++            log(f"{report['verdict']}: {len(report['candidates'])} RF hypotheses; {outdir}/candidates.json")
++            return 0 if report['verdict'] in ('PROBABLE','CONFIRMED ROBOT36') else 2
+         return _run(args, outdir, basename, log, t_start)
+     except KeyboardInterrupt:
+         return 1
+@@ -563,6 +546,20 @@
+         except Exception as e:
+             warnings.append(f'final line-sync evaluation failed: {e}')
+ 
++    # Independent structure measurement precedes rendering. Overrides select a grid only.
++    from .protocol import measure_geometry, inspect_vis
++    measured=measure_geometry(xb,fs,tmg.t_line0-x_t0,tmg.period)
++    measured['window_start_s']=x_t0
++    measured['vis']=inspect_vis(xb,fs,x_t0,params)
++    tmg.agreement['protocol_evidence']=measured
++    if not measured['valid']:
++        extra=dict(software=dict(version=__version__),input=args.input,detected=False,
++                   verdict='NO EVIDENCE',reason=measured['reason'],protocol_evidence=measured,
++                   timing=diagnostics.to_plain(tmg),images=[])
++        with open(os.path.join(outdir,f'{basename}_diagnostics.json'),'w') as fh:
++            json.dump(diagnostics.to_plain(extra),fh,indent=2,allow_nan=False)
++        log('NO EVIDENCE: '+measured['reason'])
++        return 2
+     # ------------------------------------------------------------------ decode
+     try:
+         t1 = time.time()
+--- v0.2/robot36dec/decode.py
++++ v0.3/robot36dec/decode.py
+@@ -76,8 +76,9 @@
+     m = ROBOT36
+     ls = float(t_line0) + np.arange(H, dtype=np.float64)[:, None] * float(period)
+     px = np.arange(W, dtype=np.float64)[None, :] + 0.5
+-    ty = ls + (m.y_start_ms + px * m.y_ms / W) / 1000.0
+-    tc = ls + (m.c_start_ms + px * m.c_ms / W) / 1000.0
++    clock_scale = float(period) / 0.150
++    ty = ls + clock_scale * (m.y_start_ms + px * m.y_ms / W) / 1000.0
++    tc = ls + clock_scale * (m.c_start_ms + px * m.c_ms / W) / 1000.0
+     return ty, tc
+ 
+ 
+--- v0.2/robot36dec/header.py
++++ v0.3/robot36dec/header.py
+@@ -455,12 +455,8 @@
+         if code_available:
+             dec = _decode_bits(xs, fs, xs_t0, t_leader, float(params.vis_bit_offset_scan_ms))
+             bits, code, parity_ok, code_source = dec["bits"], dec["code"], dec["parity_ok"], "plateau"
+-            if not parity_ok and mf_margin >= MF_ADOPT_MARGIN:
+-                hd = int(sum(int(u != v) for u, v in zip(bits, vis_bits(mf_code))))
+-                if hd <= 2:
+-                    notes.append(f"plateau code {code} failed parity; joint matched-filter code {mf_code} "
+-                                 f"(margin {mf_margin:.2f}, {hd} bit(s) apart) adopted")
+-                    bits, code, parity_ok, code_source = vis_bits(mf_code), mf_code, True, "matched-filter"
++            # Measured parity is authoritative. A parity-valid template is a hypothesis,
++            # not permission to replace observed bits.
+             nominal, n_ok = _nominal_and_agreement(bits, dec["freqs"])
+             # decoded-code full template on the same padded position grid as stage 1 (same span -> same t_pos)
+             if code not in full_cache:
+--- v0.2/robot36dec/iqdemod.py
++++ v0.3/robot36dec/iqdemod.py
+@@ -1,18 +1,7 @@
+-"""IQ front end: channel selection, carrier/Doppler tracking, FM demodulation, resampling to 48 kHz. Chunked, read-only.
+-
+-Design (all stages keep state across chunks, so the result is identical to processing the whole file at once):
+-
+-  u8 IQ (memmap) -> complex64 -> block-mean DC removal -> fixed mix by -(signal_freq - center_freq)
+-     -> polyphase FIR decimation by D1 to f_int >= 96 kS/s                                   [raw-rate work]
+-     pass 1: Welch power spectra per block (params.iq_block_s) -> carrier search (channel-matched box filter peak,
+-             local noise floor from the flanks, noise-subtracted power centroid) -> alpha-beta tracker with slew limit,
+-             gating, hold through unlocked blocks and re-acquisition -> local-linear smoother -> CarrierTrack
+-     pass 2: fine mix by the smoothed track (phase-continuous) -> rational polyphase resampling f_int -> 48 kHz
+-             -> channel low-pass (iq_channel_bw_hz total, FFT overlap-save) -> polar discriminator (Hz)
+-             -> optional rtl_fm-style one-pole de-emphasis -> group-delay compensated float32 Hz at 48 kHz.
+-
+-The raw file is read twice (or once with the intermediate stream cached when it is small enough); it is never loaded
+-whole and no stage is O(N^2). Nothing is written anywhere.
++"""Streaming DSP primitives for the candidate-preserving v0.3 frontend.
++The public single-carrier demodulate API is removed. rf/candidates use the IQ
++conversion, coarse frontend, spectral accumulator, filtering and discriminator.
++Legacy private tracking helpers remain for numerical comparison only.
+ """
+ from dataclasses import dataclass
+ import math
+@@ -375,86 +364,9 @@
+ 
+ def _measure_blocks_impl(P: np.ndarray, freqs: np.ndarray, counts: np.ndarray, bw_hz: float, search_hz: float,
+                          pass_hz: float, lock_snr_db: float, min_z: float = _MIN_PEAK_Z) -> dict:
+-    """Per-block carrier measurement from averaged power spectra.
+-    - channel-matched detector: moving average of P over the channel bandwidth; its peak within +-search_hz;
+-    - local noise floor: mean of the medians of the two flanks (bw/2 .. 1.25 bw from the peak), which cancels a
+-      linear tilt of the receiver noise floor;
+-    - SNR in the channel bandwidth and a z-score of the peak against the chi-square scatter of the box average;
+-    - carrier estimate: power centroid of (P - floor)+ over the channel band, iterated so the band is centred
+-      (FM spectra are symmetric about the carrier, so the centroid is the carrier even when a sideband is the
+-      strongest line); the centroid is confined to the declared +-search_hz;
+-    - narrowband rejection: a detection whose in-band excess power is concentrated (> _NARROWBAND_FRAC) in the 5 bins
+-      around the spectral maximum is a CW carrier, not a +-3 kHz FM signal; its +-bw/2 neighbourhood is masked and the
+-      search is repeated once, so a strong unmodulated neighbour cannot capture the tracker."""
+-    B, nf = P.shape
+-    df = float(freqs[1] - freqs[0])
+-    half = max(1, int(round(bw_hz / 2.0 / df)))
+-    n_box = 2 * half + 1
+-    kk = np.arange(nf)
+-    valid = np.abs(freqs) <= pass_hz
+-    search = valid & (np.abs(freqs) <= search_hz)
+-    if not search.any():
+-        search = valid
+-    S = uniform_filter1d(P, n_box, axis=1, mode="nearest")
+-    allowed = np.broadcast_to(search[None, :], (B, nf)).copy()
+-    narrow_any = np.zeros(B, dtype=bool)
+-    f_cw = np.full(B, np.nan)
+-    rows = np.arange(B)
+-    n_eff = np.maximum(counts.astype(np.float64) * 0.9, 1.0)
+-    for attempt in range(2):
+-        S_search = np.where(allowed, S, -np.inf)
+-        k_peak = np.argmax(S_search, axis=1)
+-        dist = np.abs(kk[None, :] - k_peak[:, None])
+-        band = dist <= half
+-        flank_lo = int(round(bw_hz / 2.0 / df))
+-        flank_hi = int(round(1.25 * bw_hz / df))
+-        left = valid[None, :] & (kk[None, :] < k_peak[:, None]) & (dist > flank_lo) & (dist <= flank_hi)
+-        right = valid[None, :] & (kk[None, :] > k_peak[:, None]) & (dist > flank_lo) & (dist <= flank_hi)
+-        with np.errstate(all="ignore"):
+-            fl = np.nanmedian(np.where(left, P, np.nan), axis=1)
+-            fr = np.nanmedian(np.where(right, P, np.nan), axis=1)
+-            glob = np.nanmedian(np.where(valid[None, :] & ~band, P, np.nan), axis=1)
+-        both = np.isfinite(fl) & np.isfinite(fr)
+-        floor = np.where(both, 0.5 * (fl + fr), np.where(np.isfinite(fl), fl, np.where(np.isfinite(fr), fr, glob)))
+-        floor = np.where(np.isfinite(floor) & (floor > 0), floor, np.nan)
+-        with np.errstate(all="ignore"):
+-            sigma_S = floor / np.sqrt(n_eff * n_box)
+-            S_pk = S[rows, k_peak]
+-            z = (S_pk - floor) / sigma_S
+-            excess = np.maximum(P - floor[:, None], 0.0)
+-            sig = (excess * band).sum(axis=1)
+-            snr_lin = sig / (floor * n_box)
+-            snr_db = 10.0 * np.log10(np.maximum(snr_lin, 1e-6))
+-            # narrowband test: share of the in-band excess within +-2 bins of the in-band spectral maximum
+-            k_max = np.argmax(np.where(band, excess, -1.0), axis=1)
+-            near = np.abs(kk[None, :] - k_max[:, None]) <= 2
+-            frac_nb = (excess * (band & near)).sum(axis=1) / np.maximum(sig, 1e-30)
+-            # centroid refinement (confined to the declared search range)
+-            f_c = freqs[k_peak].astype(np.float64)
+-            for _ in range(3):
+-                w = excess * ((np.abs(freqs[None, :] - f_c[:, None]) <= bw_hz / 2.0) & valid[None, :])
+-                ws = w.sum(axis=1)
+-                f_new = np.where(ws > 0, (w * freqs[None, :]).sum(axis=1) / np.where(ws > 0, ws, 1.0), f_c)
+-                f_c = np.clip(f_new, -search_hz, search_hz)
+-        ok_block = (counts >= 2) & np.isfinite(floor) & np.isfinite(z)
+-        strong = ok_block & (snr_db >= lock_snr_db) & (z >= min_z)
+-        narrow = strong & (frac_nb > _NARROWBAND_FRAC)
+-        if attempt == 0:
+-            if not narrow.any():
+-                break
+-            narrow_any = narrow.copy()
+-            f_cw[narrow] = freqs[k_max[narrow]]
+-            # every channel box that still contains the CW must be excluded, i.e. box centres within a full channel width
+-            allowed[narrow] &= ~(np.abs(kk[None, :] - k_max[narrow][:, None]) <= 2 * half)
+-            allowed[narrow & ~np.any(allowed, axis=1)] = search[None, :]       # nothing left to search: keep the original
+-        else:
+-            # a second narrowband detection in the same block is also rejected (not an FM signal)
+-            narrow_any |= narrow
+-    detected = ok_block & (snr_db >= lock_snr_db) & (z >= min_z) & ~narrow
+-    return {"f_meas": np.where(ok_block, f_c, np.nan), "snr_db": np.where(ok_block, snr_db, np.nan),
+-            "z": np.where(ok_block, z, np.nan), "detected": detected, "floor": floor, "k_peak": k_peak,
+-            "ok_block": ok_block, "n_box": n_box, "narrowband": narrow_any, "f_narrowband": f_cw,
+-            "frac_narrowband": np.where(ok_block, frac_nb, np.nan)}
++    """Signed CNR and covariance-aware spectral screening (RF hypotheses only)."""
++    from .rf import measure_compat
++    return measure_compat(P, freqs, counts, bw_hz, search_hz, pass_hz, lock_snr_db, min_z)
+ 
+ 
+ def _alpha_beta_track(f_meas: np.ndarray, detected: np.ndarray, dt: float, max_slew: float,
+@@ -567,7 +479,8 @@
+     if not (1000.0 <= bw < fs_out - 2 * _STAGE2_MARGIN_HZ - 1000.0):
+         raise ValueError(f"iq_channel_bw_hz={bw} must lie in [1000, {fs_out - 2 * _STAGE2_MARGIN_HZ - 1000})")
+     f_coarse = float(spec.signal_freq) - float(spec.center_freq)
+-    D1 = max(1, int(fs_iq // _INTERMEDIATE_FS_MIN))
++    required_int = max(_INTERMEDIATE_FS_MIN, 2.6 * (float(params.iq_search_hz) + bw / 2 + _SEARCH_MARGIN_HZ))
++    D1 = max(1, int(fs_iq // required_int))
+     f_int = fs_iq / D1
+     search = float(params.iq_search_hz)
+     # passband of the first stage must fit the raw band around the coarse offset and the intermediate Nyquist zone
+@@ -597,226 +510,5 @@
+ def demodulate(path: str, spec: IQSpec, params: Params, *, chunk_samples: int = 1 << 20,
+                cache_intermediate: bool | None = None, return_spectra: bool = False,
+                progress=None) -> tuple[AudioSignal, dict]:
+-    """Full IQ chain, processed in chunks with overlap-save style continuity:
+-    1. remove DC (block mean) from the u8-derived complex samples;
+-    2. coarse channel: mix by -(signal_freq - center_freq), low-pass + decimate to an intermediate rate (>= 96 kS/s, integer factors);
+-    3. carrier search/tracking: per block of params.iq_block_s, power spectrum peak within +-params.iq_search_hz above the median
+-       noise floor; a tracker (alpha-beta / Kalman) with slew limit params.iq_max_slew_hz_s that holds the last prediction
+-       through no-carrier blocks and flags locked/unlocked; the predicted Doppler trend (approximately linear, up to ~ -180 Hz/s
+-       at TCA for 437 MHz) is used for prediction;
+-    4. fine mix by the smoothed track so the carrier sits at 0 Hz, channel low-pass of params.iq_channel_bw_hz total width,
+-       decimate to 48 kHz;
+-    5. polar discriminator: f[n] = fs/(2*pi) * angle(z[n]*conj(z[n-1])) in Hz; optional one-pole de-emphasis
+-       (params.iq_deemphasis_us; 0 disables) applied as in rtl_fm (a = 1-exp(-1/(fs*tau)));
+-    6. return AudioSignal(samples=f (float32 Hz), fs=48000, t0=0.0, source=path, meta={...}) and diag with the CarrierTrack,
+-       the decimation factors, the channel bandwidth and the mean/max carrier SNR.
+-    Must process a 1.024 MS/s, 11-minute file without loading it whole and without O(N^2) behaviour.
+-
+-    Extra keyword arguments (all optional): chunk_samples = raw complex samples per chunk; cache_intermediate = keep the
+-    decimated intermediate stream of pass 1 in memory for pass 2 (None: automatic, when it is below ~768 MB; the output is
+-    bit-identical either way); return_spectra = include the per-block search spectra in diag; progress = callable
+-    (stage: str, fraction: float) for progress reporting. Output sample i is aligned to input time i / 48000 (all filter
+-    group delays compensated); the audio length is floor(n_iq * 48000 / fs_iq)."""
+-    fmt = str(spec.fmt).lower()
+-    if fmt not in ("u8", "cu8", "uint8"):
+-        raise ValueError(f"unsupported IQ format {spec.fmt!r}: only unsigned 8-bit interleaved I/Q is supported")
+-    t_start = time.perf_counter()
+-    plan = _plan(spec, params)
+-    fs_iq, fs_out, bw = plan["fs_iq"], plan["fs_out"], plan["bw"]
+-    D1, f_int, U, Dn = plan["D1"], plan["f_int"], plan["U"], plan["Dn"]
+-    n_iq = iq_num_samples(path)
+-    if n_iq < 2:
+-        raise ValueError(f"{path}: no IQ samples")
+-    duration_s = n_iq / fs_iq
+-    block_s = float(params.iq_block_s)
+-    max_slew = float(params.iq_max_slew_hz_s)
+-    lock_snr_db = float(getattr(params, "iq_lock_snr_db", _DEFAULT_LOCK_SNR_DB))
+-    smooth_s = float(getattr(params, "iq_track_smooth_s", _DEFAULT_TRACK_SMOOTH_S))
+-    chunk = max(D1, (int(chunk_samples) // D1) * D1)
+-    n_int_total = -((-n_iq) // D1)
+-    if cache_intermediate is None:
+-        cache_intermediate = n_int_total * 8 <= _CACHE_AUTO_LIMIT_BYTES
+-    fe = _FrontEnd(fs_iq, plan["f_coarse"], plan["h1"], D1)
+-
+-    # ---------------- pass 1: intermediate stream -> block spectra -> carrier measurements ----------------
+-    n_blocks = max(1, int(math.ceil(duration_s / block_s)))
+-    spectra = _BlockSpectra(f_int, plan["n_fft"], block_s, n_blocks)
+-    cache = [] if cache_intermediate else None
+-    n0 = 0
+-    m0 = 0
+-
+-    def take_pass1(y: np.ndarray):
+-        nonlocal m0
+-        if y.shape[0] == 0:
+-            return
+-        spectra.add(y, m0)
+-        if cache is not None:
+-            cache.append(y)
+-        m0 += y.shape[0]
+-
+-    for z in iter_iq_u8(path, chunk_samples=chunk):
+-        take_pass1(fe.process(z))
+-        n0 += z.shape[0]
+-        if progress is not None:
+-            progress("search", min(1.0, n0 / n_iq))
+-    take_pass1(fe.finish())
+-    t_pass1 = time.perf_counter()
+-    P = spectra.spectra()
+-    freqs = spectra.freqs()
+-    meas = _measure_blocks(P, freqs, spectra.count, bw, plan["search"], plan["f_pass1"], lock_snr_db)
+-    t_blocks = np.minimum((np.arange(n_blocks) + 0.5) * block_s, duration_s)
+-    f_pred, locked_causal, inlier = _alpha_beta_track(meas["f_meas"], meas["detected"], block_s, max_slew)
+-    f_offset = _smooth_track(t_blocks, meas["f_meas"], inlier, meas["snr_db"], smooth_s, max_slew, block_s)
+-    track = CarrierTrack(t=t_blocks.astype(np.float64), f_offset=f_offset.astype(np.float64),
+-                         snr_db=meas["snr_db"].astype(np.float64), locked=inlier.astype(bool))
+-
+-    # ---------------- pass 2: fine mix, resample, channel filter, discriminate ----------------
+-    if cache is None:
+-        fe.reset()          # the raw file is re-read from the start; with the cache the front end keeps its
+-                            # end-of-file state so the final flush continues the stream correctly
+-    res = _Resampler(plan["h2"], U, Dn)
+-    chan = _FIRStream(plan["h3"])
+-    disc = _Discriminator(fs_out)
+-    deemph_us = float(params.iq_deemphasis_us)
+-    deemph = _Deemphasis(fs_out, deemph_us * 1e-6) if deemph_us > 0 else None
+-    tau1 = fe.dec.delay_in_samples / fs_iq if fe.dec is not None else 0.0
+-    tau2 = res.delay_up_samples / plan["f_up"]
+-    tau3 = chan.delay_samples / fs_out
+-    tau4 = 0.5 / fs_out
+-    group_delay_s = tau1 + tau2 + tau3 + tau4
+-    n_delay = int(round(group_delay_s * fs_out))
+-    n_out = int((n_iq * fs_out) // int(round(fs_iq))) if abs(fs_iq - round(fs_iq)) < 1e-6 else int(n_iq * fs_out / fs_iq)
+-    out = np.zeros(n_out, dtype=np.float32)
+-    produced = 0        # demodulated samples produced so far (before delay trimming)
+-    phase_cycles = 0.0  # fine-mix phase carry (cycles)
+-
+-    def emit(f_chunk: np.ndarray):
+-        nonlocal produced
+-        if f_chunk.shape[0] == 0:
+-            return
+-        a = produced
+-        b = produced + f_chunk.shape[0]
+-        produced = b
+-        lo = max(a, n_delay)
+-        hi = min(b, n_delay + n_out)
+-        if hi > lo:
+-            out[lo - n_delay:hi - n_delay] = f_chunk[lo - a:hi - a]
+-
+-    def run_chain(y: np.ndarray, m_start: int):
+-        nonlocal phase_cycles
+-        M = y.shape[0]
+-        if M == 0:
+-            return
+-        tt = (m_start + np.arange(M, dtype=np.float64)) / f_int
+-        f_tr = np.interp(tt, t_blocks, f_offset)
+-        inc = np.cumsum(f_tr) / f_int
+-        ph = phase_cycles + np.concatenate([[0.0], inc[:-1]])
+-        phase_cycles = (phase_cycles + inc[-1]) % 1.0
+-        lo = np.exp(-2j * np.pi * (ph % 1.0)).astype(np.complex64)
+-        z48 = res.process(y * lo)
+-        z48 = chan.process(z48)
+-        f = disc.process(z48)
+-        if deemph is not None:
+-            f = deemph.process(f)
+-        emit(f)
+-
+-    m_start = 0
+-    if cache is not None:
+-        n_chunks = len(cache)
+-        for i in range(n_chunks):
+-            y = cache[i]
+-            cache[i] = None
+-            run_chain(y, m_start)
+-            m_start += y.shape[0]
+-            if progress is not None:
+-                progress("demodulate", min(1.0, (i + 1) / max(n_chunks, 1)))
+-        del cache
+-    else:
+-        n0 = 0
+-        for z in iter_iq_u8(path, chunk_samples=chunk):
+-            y = fe.process(z, measure_dc=False)
+-            run_chain(y, m_start)
+-            n0 += z.shape[0]
+-            m_start += y.shape[0]
+-            if progress is not None:
+-                progress("demodulate", min(1.0, n0 / n_iq))
+-        y = fe.finish(measure_dc=False)
+-        run_chain(y, m_start)
+-        m_start += y.shape[0]
+-    # flush: push zeros through the chain until the delayed output covers n_out samples (the channel filter emits
+-    # whole blocks, so the flush also covers one FFT block)
+-    n_flush_raw = int(math.ceil((group_delay_s + (chan.n_fft + chan.L) / fs_out + 0.05) * fs_iq))
+-    n_flush_raw += (-n_flush_raw) % D1
+-    y = fe.process(np.zeros(n_flush_raw, dtype=np.complex64), measure_dc=False)
+-    run_chain(y, m_start)
+-    m_start += y.shape[0]
+-    y = fe.finish(measure_dc=False)
+-    run_chain(y, m_start)
+-    t_end = time.perf_counter()
+-
+-    # ---------------- diagnostics ----------------
+-    lk = track.locked
+-    snr_locked = track.snr_db[lk] if lk.any() else np.zeros(0)
+-    cnr_offset_db = 10.0 * math.log10(fs_out / bw)
+-    dc_mean = fe.dc_sum / max(fe.dc_n, 1)
+-    elapsed = t_end - t_start
+-    meta = {
+-        "input": "iq_u8",
+-        "fs_iq": fs_iq,
+-        "center_freq_hz": float(spec.center_freq),
+-        "signal_freq_hz": float(spec.signal_freq),
+-        "f_coarse_hz": plan["f_coarse"],
+-        "n_iq_samples": int(n_iq),
+-        "duration_s": float(duration_s),
+-        "intermediate_fs": float(f_int),
+-        "decimation": {"D1": int(D1), "up": int(U), "down": int(Dn)},
+-        "channel_bw_hz": bw,
+-        "search_hz": float(plan["search"]),
+-        "search_hz_requested": float(plan["search_requested"]),
+-        "block_s": block_s,
+-        "n_fft": int(plan["n_fft"]),
+-        "deemphasis_us": deemph_us,
+-        "deemph_alpha": float(deemph.alpha) if deemph is not None else 0.0,
+-        "filter_taps": {"stage1": int(len(plan["h1"])) if plan["h1"] is not None else 0, "stage2": int(len(plan["h2"])),
+-                        "channel": int(len(plan["h3"]))},
+-        "group_delay_s": float(group_delay_s),
+-        "n_delay_samples": int(n_delay),
+-        "n_samples": int(n_out),
+-        "dc_mean_re": float(dc_mean.real), "dc_mean_im": float(dc_mean.imag), "dc_max_abs": float(fe.dc_max_abs),
+-        "n_blocks": int(n_blocks),
+-        "n_blocks_locked": int(lk.sum()),
+-        "n_blocks_detected": int(np.sum(meas["detected"])),
+-        "n_blocks_narrowband_rejected": int(np.sum(meas.get("narrowband", np.zeros(0, bool)))),
+-        "narrowband_hz_median": (float(np.nanmedian(meas["f_narrowband"])) if np.isfinite(meas.get("f_narrowband", np.full(1, np.nan))).any() else None),
+-        "frac_locked": float(lk.mean()) if n_blocks else 0.0,
+-        "first_lock_s": float(track.t[lk][0]) if lk.any() else None,
+-        "last_lock_s": float(track.t[lk][-1]) if lk.any() else None,
+-        "carrier_snr_mean_db": float(np.mean(snr_locked)) if snr_locked.size else None,
+-        "carrier_snr_max_db": float(np.max(snr_locked)) if snr_locked.size else None,
+-        "cnr_48k_offset_db": float(cnr_offset_db),      # CNR in 48 kHz = snr_db(channel) - this
+-        "f_offset_mean_hz": float(np.mean(f_offset[lk])) if lk.any() else 0.0,
+-        "f_offset_slew_hz_s": float(np.median(np.diff(f_offset)) / block_s) if n_blocks > 1 else 0.0,
+-        "cache_intermediate": bool(cache_intermediate),
+-        "elapsed_s": float(elapsed),
+-        "elapsed_pass1_s": float(t_pass1 - t_start),
+-        "realtime_factor": float(duration_s / elapsed) if elapsed > 0 else None,
+-        "units": "Hz (instantaneous frequency deviation)",
+-    }
+-    diag = {
+-        "carrier_track": track,
+-        "f_meas_hz": meas["f_meas"],
+-        "detected": meas["detected"],
+-        "narrowband": meas.get("narrowband"),
+-        "frac_narrowband": meas.get("frac_narrowband"),
+-        "z": meas["z"],
+-        "noise_floor": meas["floor"],
+-        "f_pred_causal_hz": f_pred,
+-        "locked_causal": locked_causal,
+-        "plan": {k: v for k, v in plan.items() if not k.startswith("h")},
+-        **{k: v for k, v in meta.items() if k not in ("decimation",)},
+-        "decimation": meta["decimation"],
+-    }
+-    if return_spectra:
+-        diag["block_spectra"] = {"freqs_hz": freqs, "power": P, "counts": spectra.count.copy()}
+-    audio = AudioSignal(samples=out, fs=fs_out, t0=0.0, source=str(path), meta=meta)
+-    return audio, diag
++    """Removed single-carrier API. Use candidates.analyze for all RF hypotheses."""
++    raise RuntimeError("v0.3 removes single-carrier demodulate(): use robot36dec.candidates.analyze(path, out, spec)")
+--- v0.2/robot36dec/params.py
++++ v0.3/robot36dec/params.py
+@@ -78,7 +78,7 @@
+     mask_percentile: float = 0.5
+     # IQ front end
+     iq_channel_bw_hz: float = 15000.0
+-    iq_search_hz: float = 15000.0
++    iq_search_hz: float = 30000.0
+     iq_block_s: float = 0.5
+     iq_max_slew_hz_s: float = 300.0
+     iq_deemphasis_us: float = 75.0
+@@ -108,4 +108,6 @@
+     @classmethod
+     def default(cls):
+         frozen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "params_frozen.json")
+-        return cls.from_json(frozen) if os.path.exists(frozen) else cls()
++        p = cls.from_json(frozen) if os.path.exists(frozen) else cls()
++        p.iq_search_hz = 30000.0  # v0.3 frequency uncertainty, not tuned to a recording
++        return p
+--- /dev/null
++++ v0.3/robot36dec/protocol.py
+@@ -0,0 +1,223 @@
++"""Measured Robot 36 geometry. No pixel decoder or image smoothness enters a decision.
++
++Cadence acquisition uses sync alone. Porch/separator validation uses disjoint data
++and exact nominal geometry; overrides only select where to measure. Scores are
++engineering evidence, not probabilities. Rejecting weak evidence is inconclusive.
++"""
++import numpy as np
++from scipy import signal
++
++
++def _coherence(x, fs, centres, duration, frequency):
++    n = max(12, int(round(duration * fs)))
++    offsets = np.arange(n) - (n - 1) / 2
++    indices = np.rint(np.asarray(centres)[:, None] * fs + offsets).astype(int)
++    valid = (indices[:, 0] >= 0) & (indices[:, -1] < len(x))
++    y = x[np.clip(indices, 0, max(0, len(x)-1))].astype(float)
++    w = np.hanning(n)
++    osc = np.exp(-2j*np.pi*frequency*offsets/fs)
++    p = np.abs((y*w) @ osc)**2
++    den = w.sum() * (y*y*w).sum(axis=1)
++    return np.where(valid, np.clip(2*p/np.maximum(den,1e-20),0,1),np.nan)
++
++
++def _contrast(x, fs, centres, duration, expected, alternatives):
++    good = _coherence(x,fs,centres,duration,expected)
++    bad = np.max([_coherence(x,fs,centres,duration,f) for f in alternatives],axis=0)
++    return good-bad, good
++
++
++def _summary(values):
++    v=np.asarray(values);v=v[np.isfinite(v)]
++    if not len(v): return dict(mean=0.,se=1.,z=0.,n=0)
++    # Cluster bootstrap analogue: adjacent line pairs share RF and chroma state.
++    if len(v)%2:v=v[:-1]
++    pairs=v.reshape(-1,2).mean(axis=1) if len(v) else np.zeros(0)
++    se=max(float(np.std(pairs,ddof=1)/np.sqrt(len(pairs))) if len(pairs)>1 else 1.,.012)
++    mean=float(np.mean(v)) if len(v) else 0.
++    return dict(mean=mean,se=se,z=mean/se,n=int(len(v)))
++
++
++def measure_geometry(x, fs, t0, period=.150, n_lines=240):
++    """t0 relative to x. Exact line geometry, measured without tone reconstruction."""
++    x=np.asarray(x,dtype=np.float32)
++    n=min(n_lines,max(0,int((len(x)/fs-t0)/period)))
++    line=t0+np.arange(n)*period; scale=period/.150
++    if n<12:return dict(valid=False,reason='fewer than 12 complete lines',n_lines=n)
++    centres=lambda ms: line+ms/1000*scale
++    # Compare the sync to nearby off-pulse positions to require pulse geometry.
++    syn,_=_contrast(x,fs,centres(4.5),.007*scale,1200,[1500,1900,2300])
++    off1=_coherence(x,fs,centres(-4.5),.007*scale,1200)
++    off2=_coherence(x,fs,centres(16.5),.007*scale,1200)
++    pulse_coherence=_coherence(x,fs,centres(4.5),.007*scale,1200)
++    shape=pulse_coherence-.5*(off1+off2)
++    porch,_=_contrast(x,fs,centres(10.5),.0025*scale,1500,[1200,1900,2300])
++    porch2,porch2_power=_contrast(x,fs,centres(105.25),.0013*scale,1900,[1200,1500,2300])
++    cr,_=_contrast(x,fs,centres(102.25),.004*scale,1500,[1200,1900,2300])
++    cb,_=_contrast(x,fs,centres(102.25),.004*scale,2300,[1200,1500,1900])
++    parity=np.where(np.arange(n)%2==0,cr,cb)
++    flipped=np.where(np.arange(n)%2==0,cb,cr)
++    # Recovery line zero may be one line out; report that ambiguity explicitly.
++    parity_flip=float(np.nanmean(flipped))>float(np.nanmean(parity))
++    alternate=flipped if parity_flip else parity
++    wrong=parity if parity_flip else flipped
++    # Hold out alternating line pairs; paired chroma measurements stay together.
++    hold=(np.arange(n)//2)%2==1
++    # Presence selection uses training pairs only. Adjacent disjoint pairs test it.
++    # This preserves partial frames without selecting favorable validation pixels.
++    groups=np.arange(n)//4
++    present=[g for g in range(n//4) if np.nanmean(syn[4*g:4*g+2])>.15]
++    selection='all held-out pairs'
++    if len(present)>=12:
++        hold &= np.isin(groups,present)
++        selection='training sync contrast >0.15; at least 12 groups of four lines'
++
++    result={k:_summary(v[hold]) for k,v in dict(sync=syn,pulse_geometry=shape,porch=porch,
++                 separator=alternate,alternation=alternate-wrong).items()}
++    # Require held-out aggregate structure, not just tonal concentration.
++    # Thresholds fixed before any real IQ is read; null suite includes searched maxima.
++    checks={k:(result[k]['z']>=3.5 and result[k]['mean']>=.045) for k in result}
++    # A 300 ms pulse train must not masquerade as 150 ms through pair averaging.
++    # Require independently measured sync on both line parities.
++    for parity_id in (0,1):
++        key='sync_parity_'+str(parity_id)
++        result[key]=_summary(syn[hold & (np.arange(n)%2==parity_id)])
++        checks[key]=result[key]['mean']>=.045 and result[key]['z']>=3.5
++    result['porch2']=_summary(porch2[hold])
++    # The 1.5 ms second porch is intrinsically hard to resolve at weak SNR.
++    # Strong contradiction vetoes all acceptance; confirmation requires positive evidence.
++    wrong_fraction=float(np.mean(((porch2_power-porch2)>.65)[hold] & (porch2[hold]<-.15)))
++    result['porch2']['strong_wrong_tone_fraction']=wrong_fraction
++    checks['porch2_not_contradicted']=not (wrong_fraction>.6 and result['porch2']['mean']<-.08 and result['porch2']['z']<-3.5)
++    checks['enough_lines']=n>=48 and hold.sum()>=24
++    ok=all(checks.values())
++    # Measure the aggregate sync FWHM and its centre independently of cadence.
++    offsets=np.arange(-4.,17.)
++    profile=np.array([np.nanmean(_coherence(x,fs,centres(ms),.002*scale,1200)[hold]) for ms in offsets])
++    baseline=float(np.median(profile[(offsets<0)|(offsets>12)]))
++    height=max(float(profile.max()-baseline),0.)
++    above=offsets[profile>baseline+height*.5]
++    width=float(len(above)) if height>.03 else None
++    centre=float(np.mean(above)) if len(above) and height>.03 else None
++    checks['sync_width']=width is not None and 6<=width<=12 and 2<=centre<=7
++    ok=all(checks.values())
++    result['sync_profile']={'offset_ms':offsets.tolist(),'coherence':profile.tolist(),
++                            'fwhm_ms':width,'centre_ms':centre,'height':height}
++    result.update(valid=ok,checks=checks,n_lines=n,period_s=float(period),t_line0_s=float(t0),
++                  parity_flipped=parity_flip,held_out_lines=int(hold.sum()),
++                  presence_selection=selection,training_present_groups=present,held_out_line_indices=np.where(hold)[0].tolist(),
++                  reason='all held-out geometry checks passed' if ok else 'failed: '+', '.join(k for k,v in checks.items() if not v))
++    return result
++
++
++def acquire_cadence(x,fs,t0_hint=None,period_hint=None):
++    """Fit sync on alternating line pairs, then validate disjoint pairs."""
++    x=np.asarray(x,np.float32)
++    if fs!=12000:
++        from math import gcd
++        g=gcd(int(fs),12000);x=signal.resample_poly(x,12000//g,int(fs)//g).astype(np.float32);fs=12000
++    duration=len(x)/fs
++    if duration<7.2:return dict(valid=False,reason='less than 48 lines',n_lines=int(duration/.15))
++    if t0_hint is not None:
++        return measure_geometry(x,fs,float(t0_hint),float(period_hint or .15))
++    # A short-window STFT forms a sync contrast trace. Fit on alternating line pairs only.
++    f,t,Z=signal.stft(x,fs,nperseg=96,noverlap=84,nfft=512,boundary=None)
++    power=np.abs(Z)**2
++    band=(f>=900)&(f<=2600);sb=(f>=1130)&(f<=1270)
++    contrast=power[sb].sum(axis=0)/(power[band].sum(axis=0)+1e-20)
++    contrast-=np.median(contrast)
++    fit_end=min(duration,36.)
++    ids=t<fit_end; tt=t[ids]; trace=contrast[ids]
++    periods=np.arange(.14985,.1501501,.00000375) if period_hint is None else np.array([period_hint])
++    phases=np.arange(0,.15,.0005)
++    best=[]
++    for P in periods:
++        grid=phases[:,None]+P*np.arange(int(fit_end/P))[None,:]
++        train=(np.arange(grid.shape[1])//2)%2==0
++        scores=np.mean(np.interp(grid[:,train],tt,trace),axis=1)
++        for i in signal.find_peaks(scores,distance=12)[0]:best.append((float(scores[i]),float(phases[i]),float(P)))
++    if not best:return dict(valid=False,reason='no cadence hypothesis',n_lines=0)
++    best.sort(reverse=True)
++    hypotheses=[]
++    for score,phase,P in best:
++        t0=phase-.0045
++        if t0<0:t0+=P
++        if any(abs(t0-h['t_line0_s'])<.003 for h in hypotheses):continue
++        h=measure_geometry(x,fs,t0,P);h['acquisition_score']=score;hypotheses.append(h)
++        if len(hypotheses)>=5:break
++    hypotheses.sort(key=lambda h:(h.get('valid',False),sum(v['z'] for v in h.values() if isinstance(v,dict) and 'z'in v)),reverse=True)
++    result=hypotheses[0];result['cadence_hypotheses']=[{k:v for k,v in h.items() if k!='cadence_hypotheses'} for h in hypotheses[1:]]
++    return result
++
++
++def inspect_vis(x,fs,t0,params):
++    """Independent measured-bit header check; invalid parity is never repaired."""
++    if fs!=12000:
++        from math import gcd
++        g=gcd(int(fs),12000);x=signal.resample_poly(x,12000//g,int(fs)//g);fs=12000
++    f,t,Z=signal.stft(x,fs,nperseg=240,noverlap=180,nfft=1024,boundary=None)
++    p=np.abs(Z)**2;allp=p[(f>=900)&(f<=2600)].sum(axis=0)+1e-20
++    leader=p[np.abs(f-1900)<60].sum(axis=0)/allp
++    # Search the two independent leader plateaus, not parity-valid templates.
++    length=60
++    avg=np.convolve(leader,np.ones(length)/length,mode='valid')
++    if len(avg)<63:return []
++    score=np.minimum(avg[:-62],avg[62:])
++    sync=p[np.abs(f-1200)<60].sum(axis=0)/allp
++    origin=t[:len(score)]
++    score *= np.sqrt(np.maximum(0,np.interp(origin+.615,t,sync)*np.interp(origin+.885,t,sync)))
++    peaks=signal.find_peaks(score,height=.35,distance=180)[0]
++    out=[]
++    for k in peaks:
++        leader0=float(t[k]-.010)
++        # Refine uniformly +/-10 ms; select only leader/start/stop geometry.
++        if leader0+.922>len(x)/fs or leader0<-.012:
++            out.append(dict(t_leader_s=t0+leader0,measured_code=None,parity_ok=None,bits=[],llr_db=[],credible_robot36=False,reason='truncated header'))
++            continue
++        choices=[]
++        for shift in np.arange(-.010,.0101,.001):
++            a=leader0+shift
++            centres=a+.625+np.arange(10)*.030
++            startstop=_coherence(x,fs,centres[[0,9]],.024,1200)
++            choices.append((float(np.nanmean(startstop)) if np.isfinite(startstop).any() else 0.,a,centres))
++        geometry,a,centres=max(choices,key=lambda v:v[0])
++        bits_centres=centres[1:9]
++        p1=_coherence(x,fs,bits_centres,.024,1100)
++        p0=_coherence(x,fs,bits_centres,.024,1300)
++        llr=10*np.log10((p1+1e-8)/(p0+1e-8));bits=(llr>0).astype(int)
++        code=int(sum(int(v)<<i for i,v in enumerate(bits[:7])))
++        parity=bool(sum(bits)%2==0)
++        confident=bool(geometry>=.35 and np.all(np.isfinite(llr)) and np.min(np.abs(llr))>=2.)
++        out.append(dict(t_leader_s=t0+a,measured_code=code,parity_ok=parity,bits=bits.tolist(),
++                        llr_db=llr.tolist(),leader_score=float(score[k]),start_stop_coherence=geometry,
++                        credible_robot36=confident and parity and code==8,
++                        reason='valid measured Robot36 VIS' if confident and parity and code==8 else
++                        'invalid parity' if not parity else 'weak or other-mode VIS'))
++    return out
++
++
++
++def aligned_robot36_headers(evidence):
++    """Associate measured VIS with recovered cadence and chroma line parity."""
++    period=float(evidence.get('period_s',.150))
++    origin=evidence.get('window_start_s',0.)+evidence.get('t_line0_s',0.)
++    aligned=[]
++    for header in evidence.get('vis',[]):
++        if not header['credible_robot36']:continue
++        end=header['t_leader_s']+.910*(period/.150)
++        ordinal=int(round((end-origin)/period))
++        residual=end-(origin+ordinal*period)
++        if abs(residual)<.002 and bool(ordinal%2)==bool(evidence.get('parity_flipped',False)):
++            aligned.append(dict(header,frame_origin_s=origin+ordinal*period,grid_residual_s=residual))
++    return aligned
++
++
++def classify_evidence(evidence):
++    """Availability and a chance pulse width are not positive protocol evidence."""
++    if evidence.get('valid',False):
++        aligned=bool(aligned_robot36_headers(evidence))
++        p2=evidence.get('porch2',{})
++        second_porch=p2.get('mean',0)>=.02 and p2.get('z',0)>=2.5
++        return 'CONFIRMED ROBOT36' if aligned and second_porch else 'PROBABLE'
++    checks=evidence.get('checks',{})
++    return 'INCONCLUSIVE' if checks.get('sync',False) and checks.get('pulse_geometry',False) else 'NO EVIDENCE'
+--- /dev/null
++++ v0.3/robot36dec/rf.py
+@@ -0,0 +1,154 @@
++"""RF hypotheses, not carrier locks. Retain all local spectral candidates.
++
++Noise subtraction is signed before integration. Hann-bin and Welch-overlap
++covariance are included conservatively. Spectral z remains a model-dependent
++screening statistic, never evidence of SSTV or a calibrated false-alarm claim.
++"""
++from dataclasses import dataclass,asdict,replace
++import math,os,tempfile,json
++from pathlib import Path
++import numpy as np
++from scipy import signal,ndimage
++from . import iqdemod
++from .io import iter_iq_u8,iq_num_samples
++
++
++def noise_model(row,freqs,counts):
++    # Average correlated adjacent bins first: efficient robust spatial background.
++    # Effective degrees of freedom include the Hann power covariance.
++    group=16; n=len(row)//group
++    coarse=row[:n*group].reshape(n,group).mean(axis=1)
++    cf=freqs[:n*group].reshape(n,group).mean(axis=1)
++    m=max(float(counts)/1.12*group/(35/18),1.)
++    correction=(1-1/(9*m))**3
++    width=max(5,int(round(30000/(cf[1]-cf[0])))|1)
++    floor=ndimage.median_filter(coarse,size=width,mode='nearest')/correction
++    floor=ndimage.gaussian_filter1d(floor,max(1,width/8),mode='nearest')
++    return np.maximum(np.interp(freqs,cf,floor),np.finfo(float).tiny)
++
++
++def spectral_candidates(P,freqs,counts,search_hz,pass_hz,bandwidths=(300.,11000.,15000.,25000.),min_z=6.5):
++    df=float(freqs[1]-freqs[0]); valid=np.abs(freqs)<pass_hz
++    rows=[]
++    for b,row in enumerate(P):
++        floor=noise_model(row,freqs,counts[b]); residual=row-floor
++        nodes=[]; m=max(float(counts[b])/1.12,1.)
++        for bw in bandwidths:
++            nb=max(3,int(round(bw/df))|1)
++            excess=ndimage.uniform_filter1d(residual,nb,mode='constant')*nb
++            noise=ndimage.uniform_filter1d(floor,nb,mode='constant')*nb
++            # sum covariance of Hann power: 1+2*(4/9+1/36)=35/18.
++            variance=ndimage.uniform_filter1d(floor**2,nb,mode='constant')*nb*(35/18)/m
++            z=excess/np.sqrt(np.maximum(variance,1e-30))
++            eligible=valid&(np.abs(freqs)<=search_hz)&(np.abs(freqs)+bw/2<pass_hz)
++            z=np.where(eligible,z,-np.inf)
++            peaks=signal.find_peaks(z,height=min_z,distance=max(2,int(min(bw/3,3500)/df)))[0]
++            for k in peaks:
++                a=max(0,k-nb//2);c=min(len(row),k+nb//2+1)
++                # A clipped centroid is a placement estimator only, never CNR.
++                weights=np.maximum(residual[a:c],0)
++                centre=float(np.sum(weights*freqs[a:c])/weights.sum()) if weights.sum()>0 else float(freqs[k])
++                centre=float(np.clip(centre,-search_hz,search_hz))
++                cnr=float(10*np.log10(max(excess[k]/max(noise[k],1e-30),1e-12)))
++                if cnr>=-15:
++                    nodes.append(dict(block=b,f_hz=centre,z=float(z[k]),cnr_db=cnr,rf_width_hz=float(bw),integration_width_hz=float(nb*df),
++                                      cnr_reference_hz=float(nb*df),cnr_48k_db=cnr-10*math.log10(48000/(nb*df)),
++                                      spectral_peak_hz=float(freqs[k]),narrow=(bw<1000)))
++        # Merge overlapping placements across bandwidths; retain separated transmitters.
++        nodes.sort(key=lambda n:n['z'],reverse=True); retained=[]
++        for node in nodes:
++            if not any(abs(node['f_hz']-v['f_hz'])<max(500,min(node['rf_width_hz'],v['rf_width_hz'])/4) for v in retained):
++                retained.append(node)
++        rows.append(retained)
++    return rows
++
++
++def link_candidates(rows,block_s=.5,max_slew=300.,max_gap_s=2.):
++    """One-to-one association. No candidate count cap; long gaps create new tracks."""
++    tracks=[]; active=[]
++    for b,nodes in enumerate(rows):
++        active=[j for j in active if (b-tracks[j][-1]['block'])*block_s<=max_gap_s]
++        edges=[]
++        for j in active:
++            hist=tracks[j];last=hist[-1];dt=(b-last['block'])*block_s
++            slope=0.
++            if len(hist)>1:
++                older=hist[max(0,len(hist)-5)]
++                slope=np.clip((last['f_hz']-older['f_hz'])/max((last['block']-older['block'])*block_s,block_s),-max_slew,max_slew)
++            pred=last['f_hz']+slope*dt
++            for i,node in enumerate(nodes):
++                distance=abs(node['f_hz']-pred)
++                if distance<=600+max_slew*dt:edges.append((distance,j,i))
++        used_t=set();used_n=set()
++        for _,j,i in sorted(edges):
++            if j not in used_t and i not in used_n:tracks[j].append(nodes[i]);used_t.add(j);used_n.add(i)
++        for i,node in enumerate(nodes):
++            if i not in used_n:tracks.append([node]);active.append(len(tracks)-1)
++    return tracks
++
++
++def measure_compat(P,freqs,counts,bw,search,pass_hz,lock_snr_db,min_z):
++    """Compatibility diagnostics. 'detected' means RF hypothesis, not signal lock."""
++    rows=spectral_candidates(P,freqs,counts,search,pass_hz,(bw,),min_z)
++    n=len(rows); f=np.full(n,np.nan);cnr=np.full(n,-120.);z=np.zeros(n);det=np.zeros(n,bool)
++    floors=np.array([np.mean(noise_model(row,freqs,c)) for row,c in zip(P,counts)])
++    for i,nodes in enumerate(rows):
++        if nodes:
++            node=max(nodes,key=lambda v:v['z']);f[i]=node['f_hz'];cnr[i]=node['cnr_db'];z[i]=node['z'];det[i]=cnr[i]>=lock_snr_db
++    return dict(f_meas=f,snr_db=cnr,z=z,detected=det,floor=floors,k_peak=np.zeros(n,int),ok_block=counts>=2,
++                n_box=max(3,int(round(bw/(freqs[1]-freqs[0])))),narrowband=np.zeros(n,bool),
++                f_narrowband=np.full(n,np.nan),frac_narrowband=np.zeros(n))
++
++
++def extract_intermediate(path,spec,params,directory,progress=None):
++    """Single RF scan; disk cache bounds RAM. Actual effective search is explicit."""
++    plan=iqdemod._plan(spec,params);n=iq_num_samples(path);duration=n/spec.fs
++    count=int(math.ceil(duration/params.iq_block_s))
++    fft=iqdemod._BlockSpectra(plan['f_int'],plan['n_fft'],params.iq_block_s,count)
++    front=iqdemod._FrontEnd(spec.fs,plan['f_coarse'],plan['h1'],plan['D1'])
++    cache=Path(directory)/'intermediate.c64';m=0;read=0
++    with cache.open('wb') as stream:
++        def consume(y):
++            nonlocal m
++            if len(y):fft.add(y,m);y.tofile(stream);m+=len(y)
++        for z in iter_iq_u8(path,chunk_samples=1<<20):
++            consume(front.process(z));read+=len(z)
++            if progress:progress('RF scan',read/n)
++        consume(front.finish())
++    return cache,plan,fft.spectra(),fft.freqs(),fft.count,duration
++
++
++def demodulate_candidate(cache,plan,track,start,end,bw):
++    """Independent filter/discriminator state per candidate and bandwidth."""
++    fs=plan['f_int'];source=np.memmap(cache,dtype=np.complex64,mode='r')
++    pad=.08;a=max(0,int((start-pad)*fs));b=min(len(source),int((end+pad)*fs))
++    t=(np.arange(a,b)/fs).astype(float)
++    nodes=track['measurements'];nt=np.array([n['time_s'] for n in nodes]);nf=np.array([n['f_hz'] for n in nodes])
++    f=np.interp(t,nt,nf);phase=np.cumsum(f)/fs
++    mixed=np.asarray(source[a:b])*np.exp(-2j*np.pi*phase).astype(np.complex64)
++    # Filter at the intermediate rate before conversion so large residuals cannot alias.
++    taps=signal.firwin(161,bw/2,fs=fs,window=('kaiser',8.))
++    mixed=signal.fftconvolve(mixed,taps,mode='same')
++    from .io import rational_ratio
++    up,down=rational_ratio(48000,fs);z=signal.resample_poly(mixed,up,down)
++    audio=np.zeros(len(z),np.float32)
++    audio[1:]=48000/(2*np.pi)*np.angle(z[1:]*np.conj(z[:-1]))
++    offset=a/fs;lo=int(round((start-offset)*48000));hi=int(round((end-offset)*48000))
++    return audio[max(0,lo):min(len(audio),hi)]
++
++
++def candidate_records(rows,spec,block_s,duration):
++    records=[]
++    for i,hist in enumerate(link_candidates(rows,block_s)):
++        measurements=[dict(v,time_s=min((v['block']+.5)*block_s,duration),
++                           rf_hz=spec.signal_freq+v['f_hz']) for v in hist]
++        ts=np.array([v['time_s'] for v in measurements]);f=np.array([v['f_hz'] for v in measurements])
++        slope=float(np.polyfit(ts-ts.mean(),f,1)[0]) if len(ts)>1 else None
++        records.append(dict(id=f'RF{i+1:04d}',start_s=max(0,float(ts[0]-block_s/2)),
++            end_s=min(duration,float(ts[-1]+block_s/2)),n_measurements=len(hist),
++            median_cnr_db=float(np.median([v['cnr_48k_db'] for v in hist])),
++            median_cnr_reference_hz=48000,cnr_estimand='screened spectral component, 48 kHz equivalent under local noise model',
++            median_offset_hz=float(np.median(f)),linear_slew_hz_s=slope,
++            measurements=measurements,rf_status='spectral hypothesis; SSTV unverified',
++            evaluations=[],verdict='NO EVIDENCE'))
++    return records
+--- v0.2/robot36dec/timing.py
++++ v0.3/robot36dec/timing.py
+@@ -803,6 +803,7 @@
+         except Exception as e:  # noqa
+             notes.append(f"frame-local comb failed: {e!r}")
+ 
++    measured_source, measured_period = source, P
+     # ---- overrides
+     if t0_override is not None:
+         alternatives.append((float(t0) if t0 is not None else float("nan"), float(P), source, None))
+@@ -836,17 +837,19 @@
+     # period precision: a short lever arm (few lines) gives a period standard error of 50-100 ppm, which the confidence
+     # must reflect (1 at <= 20 ppm, 0 at >= 100 ppm; weight 0.3)
+     se_ppm = agreement.get("period_se_ppm")
+-    c_per = _clip01(1.0 - (float(se_ppm) - 20.0)/80.0) if se_ppm is not None else (1.0 if source == "override" else 0.5)
++    c_per = _clip01(1.0 - (float(se_ppm) - 20.0)/80.0) if se_ppm is not None else 0.5
+     conf *= 0.7 + 0.3*c_per
+-    if source.startswith("nominal"): conf = min(conf, 0.1)
++    if measured_source.startswith("nominal"): conf = min(conf, 0.1)
+     if abs(P/P_nom - 1.0) > tol:
+         conf *= 0.5; notes.append(f"period {(P/P_nom-1)*1e6:+.0f} ppm from nominal exceeds the tolerance")
+     if not structure_ok:
+         conf *= 0.3; conf_signal *= 0.3; notes.append("confidence reduced: the pulse train is not a Robot 36 line structure")
+-    if source.startswith("nominal"): conf_signal = min(conf_signal, 0.1)
+-    if abs(P/P_nom - 1.0) > tol: conf_signal *= 0.5
+-    if source == "override": conf = max(conf, 0.5); conf_signal = max(conf_signal, 0.5)
++    if measured_source.startswith("nominal"): conf_signal = min(conf_signal, 0.1)
++    if abs(measured_period/P_nom - 1.0) > tol: conf_signal *= 0.5
++    # Placement overrides are not measurements and must not increase signal confidence.
+     agreement["confidence_signal"] = _clip01(conf_signal)
++    agreement["confidence_measurement_source"] = measured_source
++    agreement["confidence_measurement_period"] = float(measured_period)
+     agreement["confidence_components"] = dict(comb=c_comb, inliers=c_inl, agree=c_agree, coherence=c_coh,
+                                               vis=(_clip01(vis_best.confidence) if (use_normal and vis_best) else 0.0),
+                                               placement=c_place, period_precision=c_per, structure=(1.0 if structure_ok else 0.3))
+--- v0.2/tests/README.md
++++ v0.3/tests/README.md
+@@ -1,2 +1,7 @@
+-Tests use the claude-recovery venv: `../.venv/bin/python -m pytest tests -q` (install pytest into the venv if missing: `uv pip install --python ../.venv/bin/python pytest`).
+-`test_real_recording.py` is skipped unless `../../audio/ISS_2026-10-04_10-23-00.wav` exists (relative to robot36-decoder/).
++The v0.3 unit regression suite is `python -m unittest tests.test_v03 -v`.
++The independent end-to-end RF validation is `python -m tools.validate_v03 --out reports/validation/release-final --cases all --workers 4`.
++In this workspace use `tools/run-python` instead of `python` to access the existing dependencies without modifying them.
++
++`rf_reference.py` imports no decoder code. It generates literal Robot 36 waveforms, unrelated/null controls and quantized 1.024 MS/s unsigned I,Q with explicit CNR units, oscillator error, Doppler, fades and the −100 kHz capture offset.
++
++The copied `test_synthetic.py`, `test_real_recording.py`, `helpers.py` and `conftest.py` are historical v0.2 tests. They exercise the old single-carrier API/output contract, which v0.3 deliberately replaces. They are retained for review and are not the v0.3 test entry point. The parent implementation and its tests remain unchanged.
+--- /dev/null
++++ v0.3/tests/rf_reference.py
+@@ -0,0 +1,63 @@
++"""Independent encoder/RF simulator: deliberately imports no robot36dec code.
++Units and waveform formulas are explicit. CNR reference bandwidth is 48 kHz.
++"""
++import numpy as np
++from pathlib import Path
++
++
++def audio(fs=12000,lines=240,vis=True,parity_valid=True,kind='robot36',porch2_hz=1900,sync_ms=9):
++    duration=2+lines*.15+1
++    n=int(duration*fs);freq=np.full(n,1900.)
++    t0=1.91 if vis else 1.
++    if vis:
++        segments=[(1900,.3),(1200,.01),(1900,.3),(1200,.03)]
++        bits=[0,0,0,1,0,0,0];bits.append(sum(bits)%2 if parity_valid else 1-sum(bits)%2)
++        segments += [(1100 if b else 1300,.03) for b in bits]+[(1200,.03)]
++        position=1.
++        for f,d in segments:
++            freq[round(position*fs):round((position+d)*fs)]=f;position+=d
++    for row in range(lines):
++        a=t0+row*.15
++        if kind=='tone':continue
++        segments=[(1200,sync_ms/1000),(1500,(12-sync_ms)/1000),(0,.088),(1500 if row%2==0 else 2300,.0045),(porch2_hz,.0015),(0,.044)]
++        if kind=='periodic':segments=[(1200,.009),(1900,.141)]
++        pos=a
++        for f,d in segments:
++            lo=round(pos*fs);hi=min(n,round((pos+d)*fs))
++            if f:freq[lo:hi]=f
++            else:
++                # Independent image: sinusoidal bars, row gradients; chroma varies slowly.
++                coordinate=np.linspace(0,1,hi-lo,endpoint=False)
++                freq[lo:hi]=1900+260*np.sin(2*np.pi*(3*coordinate+row/51))+100*np.cos(row/23)
++            pos+=d
++    samples=np.sin(2*np.pi*np.cumsum(freq)/fs).astype(np.float32)
++    return samples,dict(fs=fs,t_line0=t0,period=.15,duration=len(samples)/fs)
++
++
++def write_iq(path,samples,fs_audio,cnr_db=6.,fs_iq=1024000,coarse=-100000.,deviation=3000.,
++             doppler=True,fades=True,oscillator_hz=6000.,seed=7,kind='fm'):
++    rng=np.random.default_rng(seed);n=int(len(samples)/fs_audio*fs_iq)
++    amplitude=.015;noise_power=amplitude**2*fs_iq/(48000*10**(cnr_db/10))
++    phase=0.;clipped=0;total=0
++    with Path(path).open('wb') as stream:
++        for a in range(0,n,1<<19):
++            b=min(n,a+(1<<19));t=np.arange(a,b)/fs_iq
++            m=np.interp(t,np.arange(len(samples))/fs_audio,samples)
++            offset=coarse+oscillator_hz+(6500-180*t+1.5*(t-18)**2 if doppler else 0.)
++            inst=offset+(deviation*m if kind in ('fm','mixed') else 0.)
++            inc=np.cumsum(inst)/fs_iq;z=amplitude*np.exp(2j*np.pi*(phase+inc));phase=(phase+inc[-1])%1
++            if fades:z*=1-.80*np.exp(-((t-14)/1.5)**2)-.65*np.exp(-((t-28)/2)**2)
++            noise=np.sqrt(noise_power/2)*(rng.normal(size=b-a)+1j*rng.normal(size=b-a))
++            if kind=='colored':
++                # Broad noise bump; no coherent transmitter, independent of RF detector.
++                F=np.fft.fft(noise);f=np.fft.fftfreq(len(noise),1/fs_iq)
++                noise=np.fft.ifft(F*np.sqrt(1+.5*np.exp(-.5*((f-(coarse+3000))/4000)**2)));z=np.zeros_like(noise)
++            if kind=='unrelated':
++                unrelated=2.5*np.sin(2*np.pi*430*t)+.5*np.sin(2*np.pi*3110*t)
++                inc=np.cumsum(offset+3000*unrelated)/fs_iq;z=amplitude*np.exp(2j*np.pi*(phase+inc));phase=(phase+inc[-1])%1
++            if kind=='mixed':z+=2*amplitude*np.exp(2j*np.pi*(coarse+25000)*t)
++            z+=noise
++            components=np.column_stack((z.real,z.imag));clipped+=np.sum(np.abs(components)>1);total+=components.size
++            np.uint8(np.rint(np.clip(components*127.5+127.5,0,255))).tofile(stream)
++    return dict(cnr_db=cnr_db,cnr_reference_hz=48000,rf_deviation_hz=deviation,
++                sample_rate=fs_iq,coarse_hz=coarse,oscillator_hz=oscillator_hz,clip_fraction=clipped/total)
+--- v0.2/tests/test_synthetic.py
++++ v0.3/tests/test_synthetic.py
+@@ -466,7 +466,7 @@
+             assert col in hdr, hdr
+         diag = run.diag
+         txt = json.dumps(diag)                                               # plain JSON types only
+-        assert "NaN" not in txt.replace("nan", "") or True                   # NaN allowed by json, but must load
++        assert "NaN" not in txt                   # NaN allowed by json, but must load
+         assert helpers.get_timing(diag) and helpers.get_period_estimate(diag) is not None
+         assert helpers.get_line_sync(diag) is not None and helpers.get_gate(diag) is not None
+         assert helpers.get_vis_candidates(diag)
+--- /dev/null
++++ v0.3/tests/test_v03.py
+@@ -0,0 +1,162 @@
++"""Audit regressions. unittest requires no optional pytest dependency."""
++import unittest,tempfile
++from pathlib import Path
++from types import SimpleNamespace as NS
++import numpy as np
++from scipy import signal
++from tests.rf_reference import audio,write_iq
++from robot36dec import protocol,rf,iqdemod
++from robot36dec.params import Params
++from robot36dec.io import IQSpec,u8_to_complex64
++from robot36dec.cli import _signal_decision
++
++class ProtocolRegression(unittest.TestCase):
++    def test_half_rate_sync_cannot_alias_robot36(self):
++        x,m=audio(vis=False)
++        for row in range(1,240,2):
++            a=round((1+row*.15)*12000);x[a:a+108]=0
++        e=protocol.acquire_cadence(x,12000)
++        self.assertFalse(e['valid'])
++        self.assertFalse(all(e['checks']['sync_parity_'+str(i)] for i in (0,1)))
++    def test_independent_robot36(self):
++        x,m=audio(vis=False);e=protocol.acquire_cadence(x,12000)
++        self.assertTrue(e['valid'],e)
++        self.assertLess(abs(e['period_s']-.15),5e-6)
++    def test_periodic_non_sstv(self):
++        x,_=audio(vis=False,kind='periodic');e=protocol.acquire_cadence(x,12000)
++        self.assertFalse(e['valid']);self.assertFalse(e['checks']['alternation'])
++    def test_constant_tone_override(self):
++        x,m=audio(vis=False,kind='tone');e=protocol.acquire_cadence(x,12000,t0_hint=1.,period_hint=.15)
++        self.assertFalse(e['valid'])
++        timing=NS(confidence=.99,agreement={'confidence_signal':.99,'protocol_evidence':e})
++        self.assertFalse(_signal_decision(timing,None,None,None,NS(frac_reliable=1.),Params(), 'auto')[0])
++    def test_structure_veto(self):
++        timing=NS(confidence=1.,agreement={'robot36_structure_ok':False,'protocol_evidence':{'valid':True}})
++        self.assertFalse(_signal_decision(timing,None,None,None,NS(frac_reliable=1.),Params(),'auto')[0])
++    def test_override_preserves_measured_confidence(self):
++        from robot36dec.timing import resolve_timing
++        from robot36dec.sync import PeriodEstimate
++        for comb in [0.,12.]:
++            pe=PeriodEstimate(None,comb,0.,.15,comb)
++            baseline=resolve_timing([],pe,None,None,Params(),audio_span=(0,40))
++            forced=resolve_timing([],pe,None,None,Params(),t0_override=1.,period_override=.15,audio_span=(0,40))
++            self.assertLessEqual(forced.agreement['confidence_signal'],baseline.agreement['confidence_signal'])
++    def test_availability_is_not_structural_evidence(self):
++        e={'valid':False,'checks':{'enough_lines':True,'sync_width':True}}
++        self.assertEqual(protocol.classify_evidence(e),'NO EVIDENCE')
++    def test_partial_frame_with_noise(self):
++        x,m=audio(vis=False);rng=np.random.default_rng(43)
++        start=round((1+64*.15)*12000);x[start:]=rng.normal(0,.7,len(x)-start)
++        e=protocol.acquire_cadence(x,12000)
++        self.assertTrue(e['valid'],e)
++        self.assertIn('training sync',e['presence_selection'])
++        self.assertGreaterEqual(e['held_out_lines'],24)
++    def test_noise_is_not_wrong_porch_evidence(self):
++        from scipy.signal import butter,sosfiltfilt
++        rng=np.random.default_rng(42);x=rng.normal(size=36*12000)
++        x=sosfiltfilt(butter(4,[400,3200],btype='bandpass',fs=12000,output='sos'),x)
++        e=protocol.measure_geometry(x,12000,.05,.15)
++        self.assertTrue(e['checks']['porch2_not_contradicted'],e)
++    def test_wrong_second_porch_rejected(self):
++        x,m=audio(vis=False,porch2_hz=1500)
++        e=protocol.acquire_cadence(x,12000)
++        self.assertFalse(e['valid']);self.assertFalse(e['checks']['porch2_not_contradicted'])
++    def test_wrong_sync_width_rejected(self):
++        x,m=audio(vis=False,sync_ms=3)
++        e=protocol.acquire_cadence(x,12000)
++        self.assertFalse(e['valid']);self.assertFalse(e['checks']['sync_width'])
++    def test_diagnostics_are_strict_json(self):
++        import json
++        from robot36dec.candidates import _write
++        with tempfile.TemporaryDirectory() as temp:
++            _write({'unknown':float('nan'),'infinite':float('inf'),'valid':np.bool_(True)},Path(temp))
++            text=(Path(temp)/'candidates.json').read_text()
++            def reject(token):raise AssertionError('non-standard JSON constant '+token)
++            decoded=json.loads(text,parse_constant=reject)
++            self.assertIsNone(decoded['unknown']);self.assertIsNone(decoded['infinite'])
++    def test_vis_alignment_uses_measured_clock_and_chroma_parity(self):
++        period=.15006;origin=.03
++        e={'valid':True,'period_s':period,'t_line0_s':origin,'window_start_s':0,
++           'parity_flipped':False,'porch2':{'mean':.1,'z':5},
++           'vis':[{'credible_robot36':True,'t_leader_s':origin+100*period-.910*(period/.15)}]}
++        self.assertEqual(protocol.classify_evidence(e),'CONFIRMED ROBOT36')
++        self.assertAlmostEqual(protocol.aligned_robot36_headers(e)[0]['frame_origin_s'],origin+100*period)
++        e['parity_flipped']=True
++        self.assertEqual(protocol.classify_evidence(e),'PROBABLE')
++    def test_header_alone_cannot_accept(self):
++        timing=NS(confidence=1.,agreement={});vis=NS(vis_code=8,parity_ok=True,confidence=1.)
++        self.assertFalse(_signal_decision(timing,vis,None,None,None,Params(),'auto')[0])
++    def test_valid_and_invalid_parity(self):
++        for valid in [True,False]:
++            x,_=audio(parity_valid=valid)
++            found=protocol.inspect_vis(x,12000,0.,Params())
++            target=[v for v in found if abs(v['t_leader_s']-1)<.05]
++            self.assertTrue(target,found)
++            self.assertEqual(target[0]['parity_ok'],valid)
++            self.assertEqual(target[0]['credible_robot36'],valid)
++    def test_no_parity_repair_in_legacy_header(self):
++        from robot36dec.header import _decode_bits,find_vis
++        x,_=audio(parity_valid=False)
++        d=_decode_bits(x,12000,0,1,30);self.assertFalse(d['parity_ok'])
++        found=find_vis(x,12000,0,Params())
++        target=[v for v in found if abs(v.t_leader-1)<.1]
++        self.assertTrue(target);self.assertFalse(target[0].parity_ok)
++        self.assertLess(target[0].confidence,.6)
++    def test_noise_and_unrelated_audio(self):
++        rng=np.random.default_rng(77)
++        t=np.arange(39*12000)/12000
++        for x in [rng.normal(size=len(t)),np.sin(2*np.pi*430*t)+.2*np.sin(2*np.pi*3110*t),np.sin(2*np.pi*1900*t)]:
++            self.assertFalse(protocol.acquire_cadence(x,12000)['valid'])
++    def test_clock_scales_pixel_offsets(self):
++        from robot36dec.decode import pixel_times
++        y,c=pixel_times(0,.150045)
++        y0,c0=pixel_times(0,.15)
++        self.assertAlmostEqual(y[0,-1]/y0[0,-1],1.0003)
++        self.assertAlmostEqual(c[0,-1]/c0[0,-1],1.0003)
++
++class RFRegression(unittest.TestCase):
++    def test_u8_and_mixer_sign(self):
++        np.testing.assert_allclose(u8_to_complex64(np.array([0,255,255,0],np.uint8)),[-1+1j,1-1j])
++        fs=1024000;n=np.arange(20000);z=np.exp(2j*np.pi*(-100000+1700)*n/fs)
++        mixed=z*iqdemod._lo_fixed(-100000/fs,0,len(z))
++        hz=fs/(2*np.pi)*np.angle(mixed[1:]*np.conj(mixed[:-1]))
++        self.assertLess(abs(np.mean(hz)-1700),.01)
++    def test_zero_carrier_cnr_not_minus_10(self):
++        rng=np.random.default_rng(4);freqs=np.linspace(-50000,50000,4096,endpoint=False)
++        p=rng.gamma(24,1/24,size=(100,len(freqs)))
++        result=rf.measure_compat(p,freqs,np.full(100,24),15000,30000,45000,-6,6.5)
++        self.assertFalse(result['detected'].any())
++        # Signed sums independently approach zero under the null; no per-bin clipping.
++        floor=rf.noise_model(p[0],freqs,24)
++        signed=(p[0]-floor)[np.abs(freqs)<7500].sum()/floor[np.abs(freqs)<7500].sum()
++        self.assertLess(abs(signed),.04)
++    def test_low_deviation_fm_preserved(self):
++        fs=128000.;n=np.arange(int(fs*4));rng=np.random.default_rng(8)
++        for deviation in [500,1000,3000]:
++            phase=2*np.pi*np.cumsum(3000+deviation*np.sin(2*np.pi*1900*n/fs))/fs
++            z=np.exp(1j*phase)+.03*(rng.normal(size=len(n))+1j*rng.normal(size=len(n)))
++            spectra=iqdemod._BlockSpectra(fs,8192,.5,8);spectra.add(z.astype(np.complex64),0)
++            rows=rf.spectral_candidates(spectra.spectra(),spectra.freqs(),spectra.count,30000,45000)
++            self.assertGreater(sum(bool(r) for r in rows),5)
++    def test_multiple_candidates_preserved(self):
++        rows=[[dict(block=i,f_hz=f,z=12.,cnr_db=0.,rf_width_hz=300,spectral_peak_hz=f,narrow=True) for f in [-6000-i*50,8000+i*10]] for i in range(20)]
++        tracks=rf.link_candidates(rows)
++        self.assertEqual(len(tracks),2);self.assertEqual([len(t) for t in tracks],[20,20])
++    def test_two_real_spectral_peaks_preserved(self):
++        fs=128000.;t=np.arange(int(fs*4))/fs;rng=np.random.default_rng(19)
++        z=np.exp(2j*np.pi*8000*t)+.8*np.exp(-2j*np.pi*10000*t)+.03*(rng.normal(size=len(t))+1j*rng.normal(size=len(t)))
++        spectra=iqdemod._BlockSpectra(fs,8192,.5,8);spectra.add(z.astype(np.complex64),0)
++        rows=rf.spectral_candidates(spectra.spectra(),spectra.freqs(),spectra.count,30000,45000)
++        for row in rows:
++            self.assertTrue(any(abs(p['f_hz']-8000)<100 for p in row))
++            self.assertTrue(any(abs(p['f_hz']+10000)<100 for p in row))
++    def test_single_carrier_api_cannot_discard_candidates(self):
++        with self.assertRaisesRegex(RuntimeError,'single-carrier'):
++            iqdemod.demodulate('unused',IQSpec(1024000,437650000),Params())
++    def test_search_accounts_for_uncertainty(self):
++        p=Params();p.iq_search_hz=40000;p.iq_channel_bw_hz=25000
++        plan=iqdemod._plan(IQSpec(1024000,437650000),p)
++        self.assertEqual(plan['search'],40000)
++        self.assertGreater(plan['f_int'],102400)
++
++if __name__=='__main__':unittest.main(verbosity=2)
+--- /dev/null
++++ v0.3/tools/analyze_real.py
+@@ -0,0 +1,52 @@
++"""Full-recording analysis guarded by the independent validation and science freeze."""
++import argparse,hashlib,json,time
++from pathlib import Path
++from concurrent.futures import ProcessPoolExecutor,as_completed
++from robot36dec.candidates import analyze
++from robot36dec.io import IQSpec
++from tools.summarize_candidates import summarize
++
++ROOT=Path(__file__).resolve().parents[1]
++INPUTS=['/data/iss/iq/ISS_2026-10-04_16-54-00_437550k_1024ksps.iq',
++        '/data/iss/iq/ISS_2026-10-04_18-30-00_437550k_1024ksps.iq']
++
++def validate_freeze():
++    freeze=json.loads((ROOT/'V03_SCIENCE_FREEZE.json').read_text())
++    for name,digest in {**freeze['files'],**freeze['test_files']}.items():
++        assert hashlib.sha256((ROOT/name).read_bytes()).hexdigest()==digest,name
++    rows=json.loads((ROOT/'reports/validation/release-final/results.json').read_text())
++    assert len(rows)==14,'Full independent RF validation required first'
++    for row in rows:
++        if row['case'] in ['colored_noise','unrelated_fm','cw','periodic_non_sstv','constant_tone']:
++            assert not row['supported'],row
++        if row['case'] in ['snr_+6','low_deviation','mixed_fm_cw']:assert row['supported'],row
++        if row['case']=='invalid_vis':assert row['verdict']!='CONFIRMED ROBOT36',row
++    for row in rows:
++        r=json.loads((ROOT/'reports/validation/release-final'/row['case']/'candidates.json').read_text())
++        for name,digest in r['source_sha256'].items():assert freeze['files']['robot36dec/'+name]==digest,name
++    return freeze
++
++def run(index):
++    path=Path(INPUTS[index]);destination=ROOT/'reports/real'/['16-54','18-30'][index]
++    destination.mkdir(parents=True,exist_ok=True)
++    initial=path.stat();h=hashlib.sha256()
++    with path.open('rb') as stream:
++        for chunk in iter(lambda:stream.read(8<<20),b''):h.update(chunk)
++    last=0
++    def progress(stage,fraction):
++        nonlocal last
++        now=time.monotonic()
++        if now-last>=20:
++            print(path.name,stage,f'{fraction:.1%}',flush=True);last=now
++    result=analyze(path,destination,IQSpec(1024000,437650000,437550000),progress=progress)
++    final=path.stat();assert (initial.st_size,initial.st_mtime_ns)==(final.st_size,final.st_mtime_ns),'Input changed'
++    (destination/'input-integrity.json').write_text(json.dumps(dict(sha256=h.hexdigest(),bytes=initial.st_size,mtime_ns=initial.st_mtime_ns),indent=2)+'\n')
++    summarize(destination)
++    print('COMPLETE',path.name,result['verdict'],len(result['candidates']),result['elapsed_s'],flush=True)
++    return dict(input=str(path),output=str(destination),verdict=result['verdict'],candidates=len(result['candidates']))
++
++if __name__=='__main__':
++    validate_freeze()
++    with ProcessPoolExecutor(max_workers=2) as pool:
++        results=[f.result() for f in as_completed([pool.submit(run,i) for i in range(2)])]
++    (ROOT/'reports/real/results.json').write_text(json.dumps(results,indent=2)+'\n')
+--- /dev/null
++++ v0.3/tools/fast_execution.py
+@@ -0,0 +1,41 @@
++"""Execution-only removal of duplicate off-gate diagnostics. No decision changes.
++The off branch of threshold_gate returns the input unchanged. Compute the auto
++branch once, and retain the same two bandpasses, flags and frozen candidate loop.
++Require exact equality to the full serial independent RF regression before use.
++"""
++from robot36dec import candidates
++from robot36dec.params import Params
++from robot36dec.iqdemod import _Deemphasis
++from robot36dec.preprocess import remove_dc,threshold_gate,bandpass
++from tools import parallel_candidates
++from tools.analyze_real import ROOT
++import json,shutil,sys
++
++
++def audio_variants(raw):
++ for deemph in (0.,75.):
++  x=raw if deemph==0 else _Deemphasis(48000,deemph*1e-6).process(raw)
++  p=Params.default();p.gate_mode='auto'
++  dc=remove_dc(x,48000,p.dc_window_s)
++  gated,info=threshold_gate(dc,48000,p)
++  yield dict(deemphasis_us=deemph,gate='off',gate_applied=False),bandpass(dc,48000,p.bp_lo_hz,p.bp_hi_hz)
++  yield dict(deemphasis_us=deemph,gate='auto',gate_applied=bool(info.applied)),bandpass(gated,48000,p.bp_lo_hz,p.bp_hi_hz)
++
++
++def evaluate(cache,plan,record,bandwidths,duration,params,out,render):
++ from pathlib import Path
++ fn=parallel_candidates.evaluator();fn.__globals__['_audio_variants']=audio_variants
++ return fn(cache,plan,record,bandwidths,duration,params,Path(out),render)
++
++if __name__=='__main__':
++ parallel_candidates.evaluate=evaluate
++ parallel_candidates.AUDIO_EXECUTION='Skip duplicate unused off-gate diagnostics; exact audio and complete RF output equivalence proven in fast-execution-equivalence.json and fast-audio-equivalence.json'
++ if '--equivalence'in sys.argv:
++  shutil.copy2(ROOT/'reports/validation/parallel-equivalence.json',ROOT/'reports/validation/parallel-original-equivalence.json')
++  parallel_candidates.validate_freeze();parallel_candidates.equivalence()
++  proof=json.loads((ROOT/'reports/validation/parallel-equivalence.json').read_text())
++  proof['execution_only_change']='Off-gate returns original input directly; auto-gate statistics calculated once, not twice.'
++  (ROOT/'reports/validation/fast-execution-equivalence.json').write_text(json.dumps(proof,indent=2)+'\n')
++ else:
++  assert json.loads((ROOT/'reports/validation/fast-execution-equivalence.json').read_text())['pass_']
++  parallel_candidates.real()
+--- /dev/null
++++ v0.3/tools/iq_statistics.py
+@@ -0,0 +1,23 @@
++"""Read-only whole-file ADC diagnostics; no decoder selection or thresholds."""
++import json,numpy as np
++from pathlib import Path
++from tools.analyze_real import INPUTS,ROOT,validate_freeze
++
++def run(path,out):
++ h=np.zeros((2,256),np.int64);cross=0;count=0
++ with Path(path).open('rb') as stream:
++  while True:
++   raw=stream.read(2<<20)
++   if not raw:break
++   z=np.frombuffer(raw,np.uint8).reshape(-1,2)
++   for k in (0,1):h[k]+=np.bincount(z[:,k],minlength=256)
++   cross+=np.sum(z[:,0].astype(np.int32)*z[:,1].astype(np.int32),dtype=np.int64);count+=len(z)
++ levels=np.arange(256);mean=h@levels/count;var=h@(levels**2)/count-mean**2
++ covariance=cross/count-mean.prod();result=dict(complex_samples=count,channel_order=['I','Q'],
++  mean_u8=mean.tolist(),rms_about_mean_u8=np.sqrt(var).tolist(),iq_correlation=float(covariance/np.sqrt(var.prod())),
++  rail_fraction=((h[:,0]+h[:,-1])/count).tolist(),histogram=h.tolist(),
++  caveat='Rail codes alone do not prove clipping; no receiver gain/calibration metadata available.')
++ Path(out).write_text(json.dumps(result,indent=2)+'\n');print(Path(path).name,{k:v for k,v in result.items() if k!='histogram'},flush=True)
++if __name__=='__main__':
++ validate_freeze()
++ for path,name in zip(INPUTS,['16-54','18-30']):run(path,ROOT/'reports/real'/name/'adc-statistics.json')
+--- /dev/null
++++ v0.3/tools/parallel_candidates.py
+@@ -0,0 +1,110 @@
++"""Computational resume only. Execute the exact frozen candidate loop in workers.
++
++AST extraction removes only progress and report checkpoint writes. DSP, windows,
++variants, measurement, ranking and rendering statements are unchanged. This tool
++is checked against the independent RF regression's full serial candidate output.
++It never changes the frozen production source or selects candidates for omission.
++"""
++import ast,inspect,json,time,hashlib,tempfile
++from pathlib import Path
++from concurrent.futures import ProcessPoolExecutor,as_completed
++from dataclasses import asdict
++from robot36dec import candidates,iqdemod,rf
++from robot36dec.params import Params
++from robot36dec.io import IQSpec
++from tools.analyze_real import ROOT,validate_freeze,INPUTS
++from tools.summarize_candidates import summarize
++
++
++def evaluator():
++ tree=ast.parse(inspect.getsource(candidates.analyze))
++ loop=next(n for n in ast.walk(tree) if isinstance(n,ast.For) and isinstance(n.target,ast.Tuple)
++           and [v.id for v in n.target.elts]==['j','record'])
++ body=loop.body[:]
++ assert isinstance(body[0],ast.If) and isinstance(body[0].test,ast.Name) and body[0].test.id=='progress'
++ assert isinstance(body[-1],ast.Expr) and isinstance(body[-1].value,ast.Call) and body[-1].value.func.id=='_write'
++ body=body[1:-1]+[ast.Return(value=ast.Name(id='record',ctx=ast.Load()))]
++ names=['cache','plan','record','bandwidths','duration','params','out','render']
++ fn=ast.FunctionDef(name='_frozen_candidate_loop',args=ast.arguments(posonlyargs=[],args=[ast.arg(arg=n) for n in names],kwonlyargs=[],kw_defaults=[],defaults=[]),body=body,decorator_list=[])
++ module=ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[]));namespace=dict(candidates.__dict__)
++ exec(compile(module,'<exact frozen candidate evaluation loop>','exec'),namespace)
++ return namespace['_frozen_candidate_loop']
++
++
++def evaluate(cache,plan,record,bandwidths,duration,params,out,render):
++ return evaluator()(cache,plan,record,bandwidths,duration,params,Path(out),render)
++
++
++def equivalence():
++ from tests.rf_reference import audio,write_iq
++ reference=json.loads((ROOT/'reports/validation/release-final/low_deviation/candidates.json').read_text())
++ params=Params(**reference['parameters']);spec=IQSpec(1024000,437650000)
++ with tempfile.TemporaryDirectory(prefix='parallel-equivalence-',dir=ROOT/'reports/validation') as temp:
++  directory=Path(temp);x,m=audio(lines=120)
++  path=directory/'reference.u8';write_iq(path,x,m['fs'],cnr_db=6,kind='fm',deviation=1000,doppler=True,fades=True,oscillator_hz=6000,seed=37)
++  cache,plan,P,f,counts,duration=rf.extract_intermediate(path,spec,params,directory)
++  rows=rf.spectral_candidates(P,f,counts,plan['search'],plan['f_pass1'],(300.,11000.,15000.,25000.))
++  records=rf.candidate_records(rows,spec,params.iq_block_s,duration)
++  with ProcessPoolExecutor(max_workers=4) as pool:
++   futures={pool.submit(evaluate,cache,plan,c,(11000.,15000.,25000.),duration,params,directory,False):i for i,c in enumerate(records)}
++   for future in as_completed(futures):records[futures[future]]=future.result()
++  result=candidates._clean(records)
++  assert result==reference['candidates'],'Parallel candidate evaluations differ from frozen serial RF regression'
++  proof=dict(pass_=True,case='independent low-deviation RF regression',candidates=len(records),
++             comparison='every candidate, every variant/window, every measurement and decision exactly equal to serial JSON')
++  (ROOT/'reports/validation/parallel-equivalence.json').write_text(json.dumps(proof,indent=2)+'\n')
++  print('EXACT EQUIVALENCE',len(records),flush=True)
++
++
++def real():
++ validate_freeze();assert json.loads((ROOT/'reports/validation/parallel-equivalence.json').read_text())['pass_']
++ started=time.monotonic();jobs=[];reports={};plans={};destinations={}
++ for name in ['16-54','18-30']:
++  out=ROOT/'reports/real'/name;report=json.loads((out/'candidates.json').read_text());params=Params(**report['parameters'])
++  metadata=report['metadata'];spec=IQSpec(metadata['sample_rate'],metadata['center_frequency_hz'],metadata['nominal_frequency_hz'])
++  assert metadata['receiver_ppm']==0
++  plan=iqdemod._plan(spec,params);cache=out/'intermediate.c64'
++  assert cache.stat().st_size==int(report['duration_s']*plan['f_int'])*8
++  reports[name]=report;plans[name]=(params,plan);destinations[name]=out
++  for i,record in enumerate(report['candidates']):
++   if 'best_evidence' not in record:jobs.append((name,i,record))
++ report_source=inspect.getsource(candidates.analyze)
++ with ProcessPoolExecutor(max_workers=4) as pool:
++  # Long jobs first is scheduling only: retain original RF candidate order in output.
++  jobs.sort(key=lambda job:job[2]['end_s']-job[2]['start_s'],reverse=True)
++  futures={}
++  for name,i,record in jobs:
++   report=reports[name];params,plan=plans[name];out=destinations[name]
++   future=pool.submit(evaluate,out/'intermediate.c64',plan,record,tuple(report['bandwidths_hz']),report['duration_s'],params,out,True)
++   futures[future]=(name,i)
++  last=time.monotonic()
++  for future in as_completed(futures):
++   name,i=futures[future];reports[name]['candidates'][i]=future.result()
++   if time.monotonic()-last>20:
++    for key,report in reports.items():
++     done=sum('best_evidence'in c for c in report['candidates']);print('PROGRESS',key,done,'/',len(report['candidates']),flush=True)
++     candidates._write(report,destinations[key])
++    last=time.monotonic()
++ for name,report in reports.items():
++  rank={'NO EVIDENCE':0,'INCONCLUSIVE':1,'PROBABLE':2,'CONFIRMED ROBOT36':3}
++  report['verdict']=max((c['verdict'] for c in report['candidates']),key=rank.get,default='NO EVIDENCE')
++  report['elapsed_s']=time.monotonic()-started
++  report['execution']=dict(mode='parallel resume of exact frozen candidate loop',workers=4,
++   serial_checkpoint='serial-checkpoint.json',equivalence_proof='../../validation/parallel-equivalence.json',
++   note='Retained completed serial evaluations; every remaining RF candidate evaluated with the same loop. Scheduling/checkpoint frequency only changed.',
++   evaluator_source_sha256=hashlib.sha256(report_source.encode()).hexdigest())
++  report['execution']['audio_execution']=globals().get('AUDIO_EXECUTION','unmodified production audio variants')
++  report['execution']['elapsed_scope']='parallel resume only; initial RF scan and cached serial work excluded'
++  candidates._write(report,destinations[name]);summarize(destinations[name])
++  path=Path(report['input']);stat=path.stat();h=hashlib.sha256()
++  with path.open('rb') as stream:
++   for chunk in iter(lambda:stream.read(8<<20),b''):h.update(chunk)
++  final=path.stat();assert (stat.st_size,stat.st_mtime_ns)==(final.st_size,final.st_mtime_ns)
++  (destinations[name]/'input-integrity.json').write_text(json.dumps(dict(sha256=h.hexdigest(),bytes=stat.st_size,mtime_ns=stat.st_mtime_ns),indent=2)+'\n')
++  print('COMPLETE',name,report['verdict'],len(report['candidates']),flush=True)
++ (ROOT/'reports/real/results.json').write_text(json.dumps([{k:r[k] for k in ['input','duration_s','verdict','elapsed_s']} for r in reports.values()],indent=2)+'\n')
++
++if __name__=='__main__':
++ import sys
++ if '--equivalence' in sys.argv:validate_freeze();equivalence()
++ else:real()
+--- /dev/null
++++ v0.3/tools/plot_region.py
+@@ -0,0 +1,28 @@
++"""Post-analysis illustration only; never feeds a classification or search."""
++import json,numpy as np,matplotlib
++matplotlib.use('Agg')
++import matplotlib.pyplot as plt
++from pathlib import Path
++ROOT=Path(__file__).resolve().parents[1]
++p=ROOT/'reports/real/18-30';r=json.loads((p/'candidates.json').read_text());assert 'elapsed_s'in r,'Whole-recording analysis must complete first'
++fig,axes=plt.subplots(2,1,figsize=(12,8))
++for c in r['candidates']:
++ points=c['measurements'];t=np.array([q['time_s'] for q in points]);f=np.array([q['f_hz'] for q in points])
++ if c['start_s']<=450 and c['end_s']>=400:axes[0].plot(t,f/1000,'.-',ms=2,lw=.5)
++axes[0].set(xlim=(400,450),xlabel='Time from capture start (s)',ylabel='Residual frequency (kHz)',title='All retained RF trajectories crossing 400–450 s; not transmitter identifications')
++rows=[]
++for c in r['candidates']:
++ for e in c['evaluations']:
++  start=e.get('window_start_s',0)
++  if start<=450 and min(start+40,c['audio_window_s'][1])>=400 and e.get('sync_profile'):
++   rows.append((e.get('sync',{}).get('z',0)+e.get('pulse_geometry',{}).get('z',0),c,e))
++rows.sort(key=lambda q:q[0],reverse=True);seen=set()
++for score,c,e in rows:
++ if c['id']in seen:continue
++ profile=e['sync_profile'];axes[1].plot(profile['offset_ms'],profile['coherence'],'.-',label=f"{c['id']}, window {e['window_start_s']:.1f} s: {e['verdict']}")
++ seen.add(c['id'])
++ if len(seen)==3:break
++axes[1].axvspan(0,9,color='gray',alpha=.12,label='Nominal 9 ms sync interval')
++axes[1].set(xlabel='Offset from acquired line origin (ms)',ylabel='Held-out 1200 Hz coherence',title='Three largest sync/pulse scores from distinct RF hypotheses; selection shown, not a p-value')
++for ax in axes:ax.grid(alpha=.2)
++axes[1].legend(fontsize=8);fig.tight_layout();fig.savefig(p/'region_400_450.png',dpi=150)
+--- /dev/null
++++ v0.3/tools/reclassify_reports.py
+@@ -0,0 +1,25 @@
++"""Apply current verdict mapping to existing independent measured evidence.
++No DSP measurements or thresholds are changed. Availability is not evidence.
++This permits regression of reporting separately from expensive RF simulation.
++"""
++from pathlib import Path
++import json
++from robot36dec.protocol import classify_evidence
++from robot36dec.candidates import _write
++
++
++def reclassify(directory):
++    rank={'NO EVIDENCE':0,'INCONCLUSIVE':1,'PROBABLE':2,'CONFIRMED ROBOT36':3}
++    root=Path(directory);data=json.loads((root/'candidates.json').read_text())
++    for r in data['candidates']:
++        for e in r['evaluations']:e['verdict']=classify_evidence(e)
++        if r['evaluations']:
++            def key(e):return rank[e['verdict']],sum(v.get('z',0) for v in e.values() if isinstance(v,dict) and 'z'in v)
++            best=max(r['evaluations'],key=key);r['best_evidence']=best;r['verdict']=best['verdict'];r['reason']=best['reason']
++    data['verdict']=max((r['verdict'] for r in data['candidates']),key=rank.get,default='NO EVIDENCE')
++    data['reporting_reclassification']='current mapping of measured checks; no DSP measurements changed'
++    _write(data,root)
++    return data
++if __name__=='__main__':
++    import sys
++    for d in sys.argv[1:]:print(d,reclassify(d)['verdict'])
+--- /dev/null
++++ v0.3/tools/run-python
+@@ -0,0 +1,6 @@
++#!/bin/sh
++export PYTHONDONTWRITEBYTECODE=1
++export OPENBLAS_NUM_THREADS=1
++export MPLCONFIGDIR=/tmp/robot36-v03-mpl
++export PYTHONPATH=/home/tommy/iss/venv/lib/python3.13/site-packages:/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}
++exec /usr/bin/python "$@"
+--- /dev/null
++++ v0.3/tools/summarize_candidates.py
+@@ -0,0 +1,44 @@
++"""Export every RF hypothesis and every measured track point; no filtering."""
++import csv,json,argparse
++from pathlib import Path
++
++
++def summarize(directory):
++    root=Path(directory);data=json.loads((root/'candidates.json').read_text())
++    fields=['id','start_s','end_s','n_measurements','median_offset_hz','linear_slew_hz_s','median_cnr_db','verdict','reason',
++            'period_ms','sync_z','sync_parity_0_z','sync_parity_1_z','pulse_geometry_z','porch_z','separator_z','alternation_z','porch2_z','sync_width_ms','valid_vis_count','images']
++    with (root/'candidates.csv').open('w',newline='') as out:
++        writer=csv.DictWriter(out,fieldnames=fields);writer.writeheader()
++        for c in data['candidates']:
++            e=c.get('best_evidence') or {};row={k:c.get(k) for k in fields[:9]}
++            row.update(period_ms=1000*e['period_s'] if e.get('period_s') else None,
++                       sync_width_ms=e.get('sync_profile',{}).get('fwhm_ms'),
++                       valid_vis_count=sum(v['credible_robot36'] for v in e.get('vis',[])),images=';'.join(c.get('images',[])))
++            for key in ['sync','sync_parity_0','sync_parity_1','pulse_geometry','porch','separator','alternation','porch2']:row[key+'_z']=e.get(key,{}).get('z')
++            writer.writerow(row)
++    with (root/'tracks.csv').open('w',newline='') as out:
++        fields=['candidate_id','time_s','f_hz','rf_hz','cnr_db','cnr_reference_hz','cnr_48k_db','z','rf_width_hz','spectral_peak_hz','narrow']
++        writer=csv.DictWriter(out,fieldnames=fields,extrasaction='ignore');writer.writeheader()
++        for c in data['candidates']:
++            for point in c['measurements']:writer.writerow(dict(point,candidate_id=c['id']))
++    text=[f"Verdict: **{data['verdict']}**. {len(data['candidates'])} RF hypotheses.",
++          'Trajectories can include sideband aliases and fragments of the same physical transmitter. They are not a count of transmitters.',
++          '| Candidate | Time (s) | Median offset (Hz) | Slew (Hz/s) | Verdict | Reason |',
++          '|---|---:|---:|---:|---|---|']
++    for c in data['candidates']:
++        slope=c['linear_slew_hz_s'];text.append(f"| {c['id']} | {c['start_s']:.2f}–{c['end_s']:.2f} | {c['median_offset_hz']:.1f} | {slope:.1f}"+f" | {c['verdict']} | {c['reason']} |" if slope is not None else f"| {c['id']} | {c['start_s']:.2f}–{c['end_s']:.2f} | {c['median_offset_hz']:.1f} | — | {c['verdict']} | {c['reason']} |")
++    (root/'CANDIDATES.md').write_text('\n\n'.join(text[:2])+'\n\n'+'\n'.join(text[2:])+'\n')
++    try:
++        import matplotlib
++        matplotlib.use('Agg')
++        import matplotlib.pyplot as plt
++        fig,ax=plt.subplots(figsize=(12,6))
++        for c in data['candidates']:
++            points=c['measurements'];ax.plot([p['time_s'] for p in points],[p['f_hz']/1000 for p in points],'.-',ms=2,lw=.6)
++        ax.set(xlabel='Time from recording start (s)',ylabel='Residual relative to corrected nominal (kHz)',title=f"{Path(data['input']).name}: all RF hypotheses")
++        ax.grid(alpha=.2);fig.tight_layout();fig.savefig(root/'frequency_tracks.png',dpi=150);plt.close(fig)
++    except ImportError:pass
++    return data
++
++if __name__=='__main__':
++    p=argparse.ArgumentParser();p.add_argument('directory');args=p.parse_args();summarize(args.directory)
+--- /dev/null
++++ v0.3/tools/validate_v03.py
+@@ -0,0 +1,55 @@
++"""Independent pre-real validation. Never opens real captures.
++Run from v0.3: python -m tools.validate_v03 --out reports/validation
++"""
++import argparse,json,tempfile,time
++from concurrent.futures import ProcessPoolExecutor,as_completed
++from pathlib import Path
++from tests.rf_reference import audio,write_iq
++from robot36dec.candidates import analyze,_clean
++from robot36dec.io import IQSpec
++
++
++def run_case(out,name,cnr=6,kind='robot36',rf_kind='fm',deviation=3000,vis=True,parity=True,lines=240):
++    destination=out/name;destination.mkdir(parents=True,exist_ok=True)
++    with tempfile.TemporaryDirectory(prefix='v03-validation-') as temp:
++        x,m=audio(lines=lines,vis=vis,parity_valid=parity,kind=kind)
++        path=Path(temp)/'reference.u8'
++        meta=write_iq(path,x,m['fs'],cnr_db=cnr,kind=rf_kind,deviation=deviation,
++                      doppler=True,fades=True,oscillator_hz=6000,seed=37)
++        print('START',name,flush=True)
++        report=analyze(path,destination,IQSpec(1024000,437650000),render=False)
++        result=dict(case=name,injected=meta,reference=m,verdict=report['verdict'],
++                     n_candidates=len(report['candidates']),elapsed_s=report['elapsed_s'],
++                     supported=[r['id'] for r in report['candidates'] if r['verdict'] in ('PROBABLE','CONFIRMED ROBOT36')])
++        # Invalid VIS must not be promoted to a confirmed header, even with valid geometry.
++        if not parity:assert report['verdict']!='CONFIRMED ROBOT36',result
++        if kind!='robot36' or rf_kind not in ('fm','mixed'):assert report['verdict'] not in ('PROBABLE','CONFIRMED ROBOT36'),result
++        if kind=='robot36' and rf_kind in ('fm','mixed') and cnr==6:assert result['supported'],result
++        print('RESULT',json.dumps(result),flush=True)
++        return result
++
++
++def main():
++    parser=argparse.ArgumentParser();parser.add_argument('--out',required=True);parser.add_argument('--cases',default='all');parser.add_argument('--workers',type=int,default=1)
++    args=parser.parse_args();out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
++    results=[]
++    cases=[]
++    if args.cases in ('all','sensitivity'):
++        cases += [(f'snr_{cnr:+d}',dict(cnr=cnr)) for cnr in [6,0,-3,-6,-9,-12]]
++    if args.cases in ('all','negative'):
++        cases += [('colored_noise',dict(rf_kind='colored',lines=120)),('unrelated_fm',dict(rf_kind='unrelated',lines=120)),
++                  ('cw',dict(rf_kind='cw',lines=120)),('periodic_non_sstv',dict(kind='periodic',vis=False,lines=120)),
++                  ('constant_tone',dict(kind='tone',vis=False,lines=120)),('invalid_vis',dict(parity=False,lines=120)),
++                  ('low_deviation',dict(deviation=1000,lines=120)),('mixed_fm_cw',dict(rf_kind='mixed',lines=120))]
++    if args.workers==1:
++        for name,kw in cases:
++            results.append(run_case(out,name,**kw))
++            (out/'results.json').write_text(json.dumps(_clean(results),indent=2,allow_nan=False)+'\n')
++    else:
++        with ProcessPoolExecutor(max_workers=args.workers) as pool:
++            futures={pool.submit(run_case,out,name,**kw):name for name,kw in cases}
++            for future in as_completed(futures):
++                results.append(future.result())
++                (out/'results.json').write_text(json.dumps(_clean(results),indent=2,allow_nan=False)+'\n')
++    print('DONE',len(results),flush=True)
++if __name__=='__main__':main()
+--- /dev/null
++++ v0.3/tools/verify_v02.py
+@@ -0,0 +1,8 @@
++"""Verify the untouched parent copy against the pre-development manifest."""
++from pathlib import Path
++import json,hashlib
++root=Path(__file__).resolve().parents[1];original=root.parents[1]
++files=json.loads((root/'V02_BASELINE.json').read_text())
++wrong=[row['path'] for row in files if hashlib.sha256((original/row['path']).read_bytes()).hexdigest()!=row['sha256']]
++print(f'{len(files)} original files checked; changed: {wrong}')
++if wrong:raise SystemExit(1)
+--- /dev/null
++++ v0.3/tools/write_report.py
+@@ -0,0 +1,68 @@
++"""Summarize completed, immutable analyses; never changes classifications."""
++import json,collections
++from pathlib import Path
++ROOT=Path(__file__).resolve().parents[1]
++
++def main():
++ rows=json.loads((ROOT/'reports/validation/release-final/results.json').read_text())
++ texts=['# v0.3 validation and independent real-recording analysis','',
++ 'The v0.2.0 parent is preserved. v0.3 is an isolated development copy, not a production release. See [exact changes](v02-to-v03.patch), [implementation details](IMPLEMENTATION.md), [unit log](validation/unit-tests.log), and [RF validation results](validation/release-final/results.json).',
++ '', '## Independent validation','',
++ '25 unit tests passed. All 14 end-to-end RF cases completed. The RF generator imports no decoder modules. Tests use unsigned 8-bit I,Q at 1.024 MS/s, a −100 kHz capture offset, +6 kHz oscillator error, curved Doppler, fades and quantization. CNR is referenced to 48 kHz before fades; these numbers are not audio SNR.',
++ '', '| Injected CNR (dB / 48 kHz) | Verdict | RF hypotheses | Supported hypotheses |','|---:|---|---:|---:|']
++ by={r['case']:r for r in rows}
++ for cnr in [6,0,-3,-6,-9,-12]:
++  r=by[f'snr_{cnr:+d}'];texts.append(f"| {cnr:+d} | {r['verdict']} | {r['n_candidates']} | {len(r['supported'])} |")
++ texts += ['','These are one seed/profile per SNR, not detection-probability estimates. Multiple supported RF hypotheses often represent sidebands/fragments of one injected transmitter. Detection does not measure recovered image quality.','',
++ '| CNR (dB) | 11 kHz | 15 kHz | 25 kHz | 0 us | 75 us |', '|---:|---|---|---|---|---|']
++ rank={'NO EVIDENCE':0,'INCONCLUSIVE':1,'PROBABLE':2,'CONFIRMED ROBOT36':3}
++ for cnr in [6,0,-3,-6,-9,-12]:
++  report=json.loads((ROOT/f'reports/validation/release-final/snr_{cnr:+d}/candidates.json').read_text())
++  evaluations=[e for c in report['candidates'] for e in c['evaluations']]
++  outcomes=[]
++  for key,value in [('channel_bw_hz',11000),('channel_bw_hz',15000),('channel_bw_hz',25000),('deemphasis_us',0),('deemphasis_us',75)]:
++   subset=[e['verdict'] for e in evaluations if (e.get(key) if key=='channel_bw_hz' else e['variant'].get(key))==value]
++   outcomes.append(max(subset,key=rank.get,default='NO EVIDENCE'))
++  texts.append(f'| {cnr:+d} | '+' | '.join(outcomes)+' |')
++ texts += ['', 'Each column is the best outcome over all other tested choices; it is not an independently calibrated detection rate.', '',
++ '| Independent control | Verdict | Supported hypotheses |','|---|---|---:|']
++ for name in ['colored_noise','unrelated_fm','cw','periodic_non_sstv','constant_tone','invalid_vis','low_deviation','mixed_fm_cw']:
++  r=by[name];texts.append(f"| {name} | {r['verdict']} | {len(r['supported'])} |")
++ texts += ['','Invalid parity is never a valid VIS confirmation. A genuine Robot 36 body with intentionally corrupted parity may remain PROBABLE. The half-rate pulse regression, wrong porch, wrong sync width, constant-tone overrides and measured-confidence controls are also in the unit suite. No negative control was accepted as PROBABLE or CONFIRMED.','',
++ '## Real recordings','',
++ 'Both files were scanned in full, after independent validation passed, with the same pre-frozen settings: 1,024,000 complex samples/s, u8 I,Q, center 437,650,000 Hz, nominal 437,550,000 Hz, ±30 kHz residual search and 20 ppm declared uncertainty. No timing hint, old classification, orbital trajectory, selected time region or image reference influenced acquisition. Input SHA-256 and original file size/mtime are recorded.',
++ '', '| Recording | Duration (s) | RF hypotheses | Verdict | Images |','|---|---:|---:|---|---:|']
++ real=[]
++ for name in ['16-54','18-30']:
++  d=ROOT/'reports/real'/name;r=json.loads((d/'candidates.json').read_text());real.append((name,r))
++  count=sum(len(c.get('images',[])) for c in r['candidates'])
++  texts.append(f"| {name} | {r['duration_s']:.3f} | {len(r['candidates'])} | {r['verdict']} | {count} |")
++ for name,r in real:
++  counts=dict(collections.Counter(c['verdict'] for c in r['candidates']))
++  texts += ['',f'### {name}', '',f'Candidate verdict counts: {counts}.',
++   f'Every RF hypothesis, rejection reason and best structural measurement: [candidate table](real/{name}/CANDIDATES.md), [candidate CSV](real/{name}/candidates.csv). Every measured time/frequency/CNR point: [track CSV](real/{name}/tracks.csv), [trajectory plot](real/{name}/frequency_tracks.png). Every bandwidth/preprocessing/window evaluation and measured VIS bit/parity decision: [full report](real/{name}/candidates.json). Input integrity: [SHA-256 and metadata](real/{name}/input-integrity.json).',
++   '', 'Reported RF frequencies include oscillator offset. Linear slew is a summary of the full measured trajectory, not an ISS identity test. The list contains threshold-limited spectral placements, not necessarily distinct physical transmitters.']
++  adc=json.loads((ROOT/'reports/real'/name/'adc-statistics.json').read_text())
++  texts += ['',f"Whole-file ADC RMS about each component mean: I={adc['rms_about_mean_u8'][0]:.6f}, Q={adc['rms_about_mean_u8'][1]:.6f} byte codes; rail fractions {adc['rail_fraction']}. [All ADC histograms/statistics](real/{name}/adc-statistics.json). This very small variation makes low-level quantization an important sensitivity limitation. It does not by itself prove a receiver fault or absence of RF."]
++  for c in r['candidates']:
++   for img in c.get('images',[]):texts.append(f"Rendered for supported candidate {c['id']}: [{Path(img).name}]({Path(img).relative_to(ROOT/'reports')}).")
++ r=real[1][1];region=[]
++ for c in r['candidates']:
++  for e in c['evaluations']:
++   start=e.get('window_start_s',0)
++   if start<=450 and min(start+40,c['audio_window_s'][1])>=400 and e.get('period_s'):
++    region.append((c,e))
++ region.sort(key=lambda pair:(pair[1].get('sync',{}).get('z',0)+pair[1].get('pulse_geometry',{}).get('z',0)),reverse=True)
++ texts += ['', '### Independent review of 400–450 s in the 18:30 file','',
++ 'This region was reviewed only after the whole-recording scan. Below are the ten largest combined sync/pulse-geometry scores among overlapping evaluations, including rejected hypotheses; these rankings do not change any verdict.',
++ '', '| Candidate | Window start (s) | RF BW (kHz) | De-emphasis (us), gate | Period (ms) | Sync z | Pulse z | Porch z | Separator z | Alternation z | Verdict / reason |',
++ '|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|']
++ for c,e in region[:10]:
++  zs=[e.get(k,{}).get('z',0) for k in ['sync','pulse_geometry','porch','separator','alternation']]
++  texts.append(f"| {c['id']} | {e['window_start_s']:.2f} | {e['channel_bw_hz']/1000:g} | {e['variant']['deemphasis_us']:g}, {e['variant']['gate']} | {e['period_s']*1000:.6f} | "+' | '.join(f'{z:.2f}' for z in zs)+f" | {e['verdict']}: {e['reason']} |")
++ texts += ['','A near-150 ms best-fit period alone is insufficient: the algorithm explicitly searches that period neighborhood. The z values are engineering statistics after multiple searched hypotheses, not calibrated p-values.','',
++ '## Remaining reasons a verdict could be wrong','',
++ 'Known injected Robot 36 is missed at sufficiently weak CNR. Noise-model errors, narrow filtering, FM threshold effects, front-end clipping, frequency uncertainty beyond the scanned range, IQ impairments, sample-rate error beyond the cadence search, short/partial frames, fades, simultaneous unresolved transmitters, sideband centroid bias, and greedy track association remain limitations. The synthetic tests use u8 quantization but do not establish sensitivity at the approximately one-code ADC RMS measured in these files; a separate amplitude/dither/gain sweep is still needed. The null suite is finite and does not calibrate false alarms across a long recording. RF motion alone cannot identify ISS without receiver calibration and ephemeris. The inherited tone/image reconstruction is heavily blurred and has not been validated across independent color reference patterns. A PROBABLE body without valid VIS has frame-origin ambiguity.','',
++ '**I would not trust this decoder to establish that a real-world recording contains no recoverable Robot 36 image.** Its reports can establish what the tested hypotheses support; negative results remain bounded by measured sensitivity and search assumptions.']
++ (ROOT/'reports/FINAL_REPORT.md').write_text('\n'.join(texts)+'\n')
++if __name__=='__main__':main()

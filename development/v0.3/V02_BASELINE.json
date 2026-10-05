@@ -1,0 +1,102 @@
+[
+  {
+    "path": "robot36dec/__init__.py",
+    "sha256": "2f9a0b539d176c39618094c013715b441eceb7819bb97400bf5712313cf136f7"
+  },
+  {
+    "path": "robot36dec/decode.py",
+    "sha256": "bc816e9e8e9f821eedbf9696c638068a25fd1c0b70afd8046ee3dab1b63beb61"
+  },
+  {
+    "path": "robot36dec/header.py",
+    "sha256": "ed6dd4ad4d53afce31d992099eca1e477d7b4cbab029c83e8c74fe475b813456"
+  },
+  {
+    "path": "robot36dec/io.py",
+    "sha256": "0ccea7266ef06b3d28e5547f6a47e22cc638ea1fc23d77b3e3450b5fe54d713a"
+  },
+  {
+    "path": "robot36dec/cli.py",
+    "sha256": "32b2692ee435eca0761ede52967e014723fd1943080699bbbcc3d9f11f7c3944"
+  },
+  {
+    "path": "robot36dec/timing.py",
+    "sha256": "4dc036f2f1d777c6ab9afd70d179a8eaa6490a14fe50f11d3d78da81c9626f75"
+  },
+  {
+    "path": "robot36dec/__main__.py",
+    "sha256": "6ce05b79ee1666025af142adc913f1d468781e77af67ae431fe163472a52fb3a"
+  },
+  {
+    "path": "robot36dec/params.py",
+    "sha256": "a7fdcba4356fa899778c732842e838d1f7236342cb10b52d777f3a0503fb452b"
+  },
+  {
+    "path": "robot36dec/tones.py",
+    "sha256": "698518fc96d2b17af1bc88c1e79c297eada11dd447c633d1b6b9d76486d29176"
+  },
+  {
+    "path": "robot36dec/sync.py",
+    "sha256": "55068e409c71ad63749ce4c339e558693f77f1b7361d331ddf41271ec1ff11ad"
+  },
+  {
+    "path": "robot36dec/params_frozen.json",
+    "sha256": "dc21b4a28be1770650e22a56d725f3ca5b0ea7c67dcb8135eb5564e00cd1aaf5"
+  },
+  {
+    "path": "robot36dec/preprocess.py",
+    "sha256": "f9edb15b69920fdaf6e173a6729b0544286e2e88e2946d2290fb959466fdacbd"
+  },
+  {
+    "path": "robot36dec/synth.py",
+    "sha256": "11eb544bddd758aee395db33fefc8aae054a122e82d9fbe443307ef1b0203be3"
+  },
+  {
+    "path": "robot36dec/modes.py",
+    "sha256": "f4c8e172c982943a7e5492d8ae05b1ccc7795a1af307853eef390c8a7dafbf4c"
+  },
+  {
+    "path": "robot36dec/iqdemod.py",
+    "sha256": "3a8ac1d635272450e9333ffdbde22964da0b83830c4d861e41c6fe259a42e375"
+  },
+  {
+    "path": "robot36dec/diagnostics.py",
+    "sha256": "d223836dcffb674c5fbcc300ec5701a25ddc487a1816435dfb771b2eb4fee5ef"
+  },
+  {
+    "path": "tests/test_synthetic.py",
+    "sha256": "f2dbb835cba1846bfb163a0f16892cf2b950b1262395dc054ce838102d7b2b29"
+  },
+  {
+    "path": "tests/helpers.py",
+    "sha256": "508a38bcb904dbbb935448c0e82e927c9f955b2948cc45811ff937c31dd52981"
+  },
+  {
+    "path": "tests/README.md",
+    "sha256": "f9f68d52c0118430e05b78e8e9b579d0b5a7752ee25148c7ec5bb36a027429fb"
+  },
+  {
+    "path": "tests/conftest.py",
+    "sha256": "58c23396b035a9bddc232d8912d3aeccac5c2382fdf62660bfb04d6ff3d47d31"
+  },
+  {
+    "path": "tests/test_real_recording.py",
+    "sha256": "2ee85b2da4dd392e837e686b4209cd5f2409644bffb02b9ededa5d9b43ce47a9"
+  },
+  {
+    "path": "tools/validate_against_references.py",
+    "sha256": "9dea0de4601384ca56a121ddce03d8933bddcc9a7d6849a2b84ed984503608b1"
+  },
+  {
+    "path": "README.md",
+    "sha256": "4ee0f7891dcc74b292313a1689ae3af6d97ef3a708967876a2200a2789c0eeab"
+  },
+  {
+    "path": "VALIDATION.md",
+    "sha256": "26d11867d784da0bfaf778aa808234023fe24bc0a7fe945df99c7744305e200c"
+  },
+  {
+    "path": "FROZEN.md",
+    "sha256": "fccbc7703cca0d8a6db19abbf54634096af11ab9bb931de0b179f41a75328f88"
+  }
+]

@@ -1,0 +1,6 @@
+#!/bin/sh
+export PYTHONDONTWRITEBYTECODE=1
+export OPENBLAS_NUM_THREADS=1
+export MPLCONFIGDIR=/tmp/robot36-v03-mpl
+export PYTHONPATH=/home/tommy/iss/venv/lib/python3.13/site-packages:/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}
+exec /usr/bin/python "$@"
